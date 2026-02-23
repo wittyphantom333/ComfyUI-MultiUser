@@ -123,6 +123,7 @@ const STYLES = `
 
 let overlayEl = null;
 let currentMode = "login"; // "login" | "register"
+let _authResolve = null; // Promise resolve callback — set by showAuthOverlay
 
 function injectStyles() {
   if (document.getElementById("mu-auth-styles")) return;
@@ -215,7 +216,7 @@ async function handleSubmit(e, isSetup) {
   if (email) body.email = email;
 
   try {
-    console.log("[MultiUser] Login POST to:", endpoint);
+    console.log("[MultiUser] Auth POST to:", endpoint);
     const res = await fetch(endpoint, {
       method: "POST",
       credentials: "include",
@@ -223,15 +224,15 @@ async function handleSubmit(e, isSetup) {
       body: JSON.stringify(body),
     });
 
-    console.log("[MultiUser] Login response status:", res.status);
+    console.log("[MultiUser] Auth response status:", res.status);
     const text = await res.text();
-    console.log("[MultiUser] Login response body:", text);
+    console.log("[MultiUser] Auth response body:", text.substring(0, 200));
 
     let data;
     try {
       data = JSON.parse(text);
     } catch (parseErr) {
-      console.error("[MultiUser] Failed to parse login response as JSON:", parseErr);
+      console.error("[MultiUser] Failed to parse response:", parseErr);
       showError("Server returned an invalid response. Check server logs.");
       btn.disabled = false;
       btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
@@ -239,57 +240,101 @@ async function handleSubmit(e, isSetup) {
     }
 
     if (!res.ok) {
-      console.warn("[MultiUser] Login failed:", data.error);
+      console.warn("[MultiUser] Auth failed:", data.error);
       showError(data.error || "An error occurred");
       btn.disabled = false;
       btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
       return;
     }
 
-    // Success — store token for Bearer-header fallback
-    console.log("[MultiUser] Login success, token present:", !!data.token);
+    // ─── Success ───
+    console.log("[MultiUser] Auth succeeded, token present:", !!data.token);
+
+    // 1. Store token for Bearer-header auth
     if (data.token) {
       storeToken(data.token);
-      console.log("[MultiUser] Token stored in localStorage, key: multiuser_token, length:", data.token.length);
-    } else {
-      console.warn("[MultiUser] No token in login response!");
+      console.log("[MultiUser] Token stored, length:", data.token.length);
     }
 
-    // Store user info and remove overlay
-    window.__multiuser_current_user = data.user;
+    // 2. Verify the token actually works by hitting /me directly
+    //    (bypass apiGet to avoid its clearToken-on-401 side-effect)
+    let verifyUser = null;
+    try {
+      const verifyRes = await fetch("/multiuser/me", {
+        credentials: "include",
+        headers: {
+          "Accept": "application/json",
+          "Authorization": `Bearer ${data.token}`,
+        },
+      });
+      console.log("[MultiUser] Verify /me status:", verifyRes.status);
+      if (verifyRes.ok) {
+        verifyUser = await verifyRes.json();
+      }
+    } catch (verifyErr) {
+      console.error("[MultiUser] Verify /me fetch error:", verifyErr);
+    }
+    console.log("[MultiUser] Token verification result:", verifyUser);
+
+    if (!verifyUser) {
+      // Token didn't survive the round-trip — something is very wrong
+      console.error("[MultiUser] Token verification failed! Token stored but /me still returns 401");
+      showError("Login succeeded but session could not be established. Check server logs.");
+      btn.disabled = false;
+      btn.textContent = "Try Again";
+      return;
+    }
+
+    // 3. Store user globally and resolve the auth promise
+    window.__multiuser_current_user = verifyUser;
     hideAuthOverlay();
-    window.dispatchEvent(new CustomEvent("multiuser-auth-success", { detail: data.user }));
-    
-    // Small delay to ensure localStorage is flushed, then reload
-    console.log("[MultiUser] Reloading page...");
-    setTimeout(() => location.reload(), 100);
+    console.log("[MultiUser] Auth complete, resolving promise for:", verifyUser.username);
+
+    if (_authResolve) {
+      _authResolve(verifyUser);
+      _authResolve = null;
+    }
   } catch (err) {
-    console.error("[MultiUser] Login fetch error:", err);
+    console.error("[MultiUser] Auth fetch error:", err);
     showError("Network error: " + err.message);
     btn.disabled = false;
     btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
   }
 }
 
-export async function showAuthOverlay() {
-  injectStyles();
+/**
+ * Show the auth overlay and return a Promise that resolves with the
+ * authenticated user object once login/registration succeeds.
+ * This does NOT reload the page — the caller can continue in-place.
+ */
+export function showAuthOverlay() {
+  return new Promise(async (resolve) => {
+    _authResolve = resolve;
+    injectStyles();
 
-  // Check if setup is needed
-  let isSetup = false;
-  try {
-    const status = await checkSetupStatus();
-    isSetup = status.needs_setup;
-    if (!isSetup && status.registration_mode === "invite") {
-      // Don't show register option in invite mode
-      currentMode = "login";
+    // Check if setup is needed
+    let isSetup = false;
+    try {
+      const status = await checkSetupStatus();
+      isSetup = status.needs_setup;
+      if (!isSetup && status.registration_mode === "invite") {
+        currentMode = "login";
+      }
+    } catch (e) {
+      // If we can't reach the server, show login anyway
     }
-  } catch (e) {
-    // If we can't reach the server, show login anyway
-  }
 
-  if (isSetup) {
-    currentMode = "register";
-  }
+    if (isSetup) {
+      currentMode = "register";
+    }
+
+    _renderOverlay(isSetup);
+  });
+}
+
+function _renderOverlay(isSetup) {
+  // Remove existing overlay
+  overlayEl?.remove();
 
   overlayEl = document.createElement("div");
   overlayEl.className = "mu-auth-overlay";
@@ -304,18 +349,7 @@ export async function showAuthOverlay() {
   if (toggleBtn) {
     toggleBtn.addEventListener("click", () => {
       currentMode = currentMode === "login" ? "register" : "login";
-      overlayEl.innerHTML = buildLoginForm(false);
-      // Re-bind
-      overlayEl.querySelector("#mu-auth-form").addEventListener("submit", (e) => handleSubmit(e, false));
-      const newToggle = overlayEl.querySelector("#mu-toggle-mode");
-      if (newToggle) {
-        newToggle.addEventListener("click", () => {
-          currentMode = currentMode === "login" ? "register" : "login";
-          // Recursive re-render. For a simple auth form, this is fine.
-          overlayEl.remove();
-          showAuthOverlay();
-        });
-      }
+      _renderOverlay(false);
     });
   }
 

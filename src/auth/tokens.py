@@ -1,5 +1,6 @@
 """JWT and API token management."""
 import hashlib
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,8 @@ from typing import Any, Optional
 import jwt
 
 from ..config import get_config
+
+logger = logging.getLogger("multiuser.tokens")
 
 
 def create_jwt(user_id: int, username: str, is_admin: bool = False) -> str:
@@ -23,20 +26,29 @@ def create_jwt(user_id: int, username: str, is_admin: bool = False) -> str:
         "exp": int(time.time()) + (expiry_hours * 3600),
         "type": "session",
     }
-    return jwt.encode(payload, secret, algorithm="HS256")
+    token = jwt.encode(payload, secret, algorithm="HS256")
+    logger.info("Created JWT for user %s (id=%d), expires in %dh, secret prefix=%s",
+                username, user_id, expiry_hours, secret[:8] if secret else "NONE")
+    return token
 
 
 def verify_jwt(token: str) -> Optional[dict[str, Any]]:
     """Verify and decode a JWT token. Returns payload or None."""
     secret = get_config("auth", "secret_key")
+    logger.debug("Verifying JWT, token prefix=%s, secret prefix=%s",
+                 token[:20] if token else "NONE", secret[:8] if secret else "NONE")
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
         if payload.get("type") != "session":
+            logger.warning("JWT valid but type=%s (expected 'session')", payload.get("type"))
             return None
+        logger.debug("JWT verified OK for user %s (id=%s)", payload.get("username"), payload.get("sub"))
         return payload
     except jwt.ExpiredSignatureError:
+        logger.info("JWT expired for token prefix=%s", token[:20] if token else "?")
         return None
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as e:
+        logger.warning("JWT invalid: %s, token prefix=%s", e, token[:20] if token else "?")
         return None
 
 

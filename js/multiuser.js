@@ -25,13 +25,21 @@ app.registerExtension({
   async init() {
     console.log("[MultiUser] init() — checking auth state");
     console.log("[MultiUser] localStorage token exists:", !!localStorage.getItem("multiuser_token"));
-    const user = await getCurrentUser();
+    let user = await getCurrentUser();
     console.log("[MultiUser] getCurrentUser result:", user);
 
     if (!user) {
+      console.log("[MultiUser] Not authenticated, showing login overlay (blocking)");
+      // showAuthOverlay returns a Promise that resolves once the user
+      // has successfully logged in — no page reload needed.
+      user = await showAuthOverlay();
+      console.log("[MultiUser] Auth overlay resolved with user:", user?.username);
+    }
+
+    if (!user) {
+      // Shouldn't happen, but guard anyway
+      console.error("[MultiUser] Auth flow completed but no user — aborting");
       _authenticated = false;
-      console.log("[MultiUser] Not authenticated, showing login overlay");
-      showAuthOverlay();
       return;
     }
 
@@ -40,6 +48,11 @@ app.registerExtension({
     console.log("[MultiUser] Authenticated as:", user.username, "admin:", user.is_admin);
     window.__multiuser_current_user = user;
     await loadPermissions();
+    console.log("[MultiUser] Permissions loaded, setting up UI");
+
+    // Set up the menu and event listeners now (since setup() may have
+    // already fired while the overlay was showing)
+    await _setupUI();
   },
 
   /**
@@ -64,43 +77,54 @@ app.registerExtension({
    * We add the user menu and bind event listeners.
    */
   async setup() {
-    // Skip entirely when not authenticated — the login overlay is showing
-    // and will reload the page once the user logs in.
-    if (!_authenticated) return;
+    // If already authenticated (user was logged in from the start),
+    // set up UI now. Otherwise init() will call _setupUI after overlay resolves.
+    if (_authenticated) {
+      await _setupUI();
+    }
+  },
+});
 
-    // Create user menu in top-right
-    await createUserMenu();
+// ── Shared UI bootstrap — called from init() or setup() ──
 
-    // Listen for custom events from menu/admin
-    window.addEventListener("multiuser-open-admin", () => openAdminPanel());
-    
-    window.addEventListener("multiuser-open-tokens", () => {
-      openAdminPanel();
-      // Switch to tokens tab after a tick
-      setTimeout(() => {
-        document.querySelector('.mu-admin-tab[data-tab="tokens"]')?.click();
-      }, 100);
-    });
+let _uiReady = false;
 
-    window.addEventListener("multiuser-open-history", () => {
-      openAdminPanel();
-      setTimeout(() => {
-        document.querySelector('.mu-admin-tab[data-tab="stats"]')?.click();
-      }, 100);
-    });
+async function _setupUI() {
+  if (_uiReady) return; // idempotent guard
+  _uiReady = true;
+  console.log("[MultiUser] _setupUI — creating user menu");
 
-    window.addEventListener("multiuser-open-password", () => {
-      const current = prompt("Current password:");
-      if (!current) return;
-      const newPw = prompt("New password (min 8 characters):");
-      if (!newPw) return;
-      const confirm = prompt("Confirm new password:");
-      if (newPw !== confirm) { alert("Passwords don't match"); return; }
+  await createUserMenu();
 
+  window.addEventListener("multiuser-open-admin", () => openAdminPanel());
+
+  window.addEventListener("multiuser-open-tokens", () => {
+    openAdminPanel();
+    setTimeout(() => {
+      document.querySelector('.mu-admin-tab[data-tab="tokens"]')?.click();
+    }, 100);
+  });
+
+  window.addEventListener("multiuser-open-history", () => {
+    openAdminPanel();
+    setTimeout(() => {
+      document.querySelector('.mu-admin-tab[data-tab="stats"]')?.click();
+    }, 100);
+  });
+
+  window.addEventListener("multiuser-open-password", () => {
+    const current = prompt("Current password:");
+    if (!current) return;
+    const newPw = prompt("New password (min 8 characters):");
+    if (!newPw) return;
+    const confirm = prompt("Confirm new password:");
+    if (newPw !== confirm) { alert("Passwords don't match"); return; }
+
+    import("./api.js").then(({ authHeaders }) => {
       fetch("/multiuser/change-password", {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ current_password: current, new_password: newPw }),
       }).then(async res => {
         const data = await res.json();
@@ -108,5 +132,7 @@ app.registerExtension({
         else alert(data.error || "Error changing password");
       });
     });
-  },
-});
+  });
+
+  console.log("[MultiUser] UI setup complete");
+}

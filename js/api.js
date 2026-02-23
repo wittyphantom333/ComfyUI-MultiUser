@@ -20,7 +20,7 @@ export function clearToken() {
 }
 
 /** Build headers, injecting Bearer token if one is stored. */
-function authHeaders(extra = {}) {
+export function authHeaders(extra = {}) {
   const headers = { "Accept": "application/json", ...extra };
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) {
@@ -35,8 +35,8 @@ export async function apiGet(path) {
     headers: authHeaders(),
   });
   if (res.status === 401) {
-    clearToken();
-    window.__multiuser_show_login?.();
+    // Don't clear token or show login here — let the caller handle 401.
+    // The init() flow in multiuser.js handles unauthenticated state.
     throw new Error("Not authenticated");
   }
   return res;
@@ -50,8 +50,6 @@ export async function apiPost(path, body = {}) {
     body: JSON.stringify(body),
   });
   if (res.status === 401) {
-    clearToken();
-    window.__multiuser_show_login?.();
     throw new Error("Not authenticated");
   }
   return res;
