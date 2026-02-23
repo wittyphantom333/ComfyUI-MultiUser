@@ -207,14 +207,15 @@ def setup_permission_routes(routes):
 
     @routes.get("/multiuser/my-sidebar")
     async def my_sidebar(request: web.Request):
-        """Return the list of sidebar tab IDs that should be hidden for the current user.
+        """Return sidebar visibility rules for the current user.
 
-        Sidebar visibility is controlled by:
-        1. Global config: sidebar.hidden_tabs (applies to all non-admin users)
-        2. Permissions: resource_type='sidebar', action='deny' (per-group)
-
-        Tab IDs are matched against resource_pattern (supports wildcards).
-        Admins always see all tabs.
+        Uses a whitelist approach:
+        - Built-in ComfyUI tabs and MultiUser tabs are approved by default.
+        - If sidebar.default_hidden is true (default), any extension tab NOT
+          explicitly approved is hidden for non-admin users.
+        - Admins always see all tabs.
+        - Per-group deny rules can hide even approved tabs.
+        - Per-group allow rules approve unknown extension tabs.
         """
         user = request.get("multiuser_user")
         if not user:
@@ -222,24 +223,33 @@ def setup_permission_routes(routes):
 
         # Admins always see everything
         if user.get("is_admin"):
-            return web.json_response({"hidden_tabs": [], "is_admin": True})
+            return web.json_response({
+                "approved_tabs": [],
+                "denied_tabs": [],
+                "default_hidden": False,
+                "is_admin": True,
+            })
 
-        # Start with global config-level hidden tabs
         from ..config import get_config
+        default_hidden = get_config("sidebar", "default_hidden", default=True)
         global_hidden = get_config("sidebar", "hidden_tabs", default=[]) or []
-        hidden = list(global_hidden)
 
-        # Add per-group deny rules from the permission system
         from .engine import get_user_permissions
         permissions = await get_user_permissions(user["id"])
         sidebar_perms = [p for p in permissions if p["resource_type"] == "sidebar"]
 
+        # Collect allow and deny patterns from permissions
+        approved = set()
+        denied = set(global_hidden)
         for p in sidebar_perms:
-            if p["action"] == "deny":
-                if p["resource_pattern"] not in hidden:
-                    hidden.append(p["resource_pattern"])
+            if p["action"] == "allow":
+                approved.add(p["resource_pattern"])
+            elif p["action"] == "deny":
+                denied.add(p["resource_pattern"])
 
         return web.json_response({
-            "hidden_tabs": hidden,
+            "approved_tabs": list(approved),
+            "denied_tabs": list(denied),
+            "default_hidden": bool(default_hidden),
             "is_admin": False,
         })

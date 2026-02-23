@@ -113,9 +113,14 @@ isolation:
 #   job-history     — Execution queue & history (ComfyUI built-in)
 #   <extension-id>  — Any tab registered by third-party extensions
 sidebar:
+  # When true, any NEW extension sidebar tab is hidden by default until
+  # an admin explicitly approves it via Admin Panel → Sidebar.
+  # Built-in ComfyUI tabs and MultiUser tabs are always approved.
+  # Admins always see all tabs regardless of this setting.
+  default_hidden: true
+
   # Global list of tab IDs to hide for ALL non-admin users.
-  # These override permission rules. Admins always see all tabs.
-  # Use the Admin Panel → Sidebar tab for per-group control instead.
+  # These override even approved tabs. Admins always see all tabs.
   hidden_tabs: []
   # Example: hide the built-in Assets and Workflows tabs for everyone:
   # hidden_tabs:

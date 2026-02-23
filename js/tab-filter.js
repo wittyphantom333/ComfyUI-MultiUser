@@ -1,29 +1,46 @@
 /**
  * ComfyUI-MultiUser — Dynamic Sidebar Tab Filter
  *
- * Manages visibility of ComfyUI sidebar tabs based on per-group permissions.
- * Works with built-in tabs (Assets, Workflows, Node Library, Model Library,
- * Job History) and any tabs registered by third-party extensions.
+ * Whitelist-based visibility: built-in ComfyUI tabs and MultiUser tabs are
+ * always allowed.  Any NEW extension tab is hidden by default until an admin
+ * explicitly approves it (via a sidebar "allow" permission rule).
  *
- * The filter fetches denied tab patterns from the backend and continuously
- * monitors for new tab registrations, removing forbidden tabs as they appear.
+ * The filter fetches the user's approved/denied lists from the backend and
+ * continuously monitors for newly registered tabs, removing unapproved ones.
  */
 
 import { app } from "../../scripts/app.js";
 import { apiGet } from "./api.js";
 
-/** Cached deny patterns from the backend. */
-let _denyPatterns = [];
+/**
+ * Tabs that are always approved regardless of permission rules.
+ * These are core ComfyUI built-in tabs and our own MultiUser tabs.
+ */
+const BUILTIN_TABS = new Set([
+  "assets",
+  "node-library",
+  "model-library",
+  "workflows",
+  "job-history",
+  "multiuser-profile",
+  "multiuser-gallery",
+  "multiuser-admin",
+  "multiuser-all-outputs",
+]);
+
+/** State */
+let _approvedPatterns = [];   // explicit allow rules from backend
+let _deniedPatterns = [];     // explicit deny rules from backend
+let _defaultHidden = true;    // hide unknown tabs by default
 let _isAdmin = false;
 let _filterActive = false;
 let _pollTimer = null;
 
-/** Known tab IDs we've already processed (avoid redundant unregister calls). */
+/** Tab IDs we've already removed (avoid redundant calls). */
 const _removedTabs = new Set();
 
 /**
  * Convert a simple wildcard pattern (with * and ?) to a RegExp.
- * Used to match sidebar permission patterns against tab IDs.
  */
 function _wildcardToRegex(pattern) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
@@ -31,37 +48,51 @@ function _wildcardToRegex(pattern) {
   return new RegExp(`^${withWildcards}$`, "i");
 }
 
-/**
- * Check if a tab ID matches any deny pattern.
- */
-function _isDenied(tabId) {
-  for (const pattern of _denyPatterns) {
-    if (pattern === tabId) return true;
-    if (pattern.includes("*") || pattern.includes("?")) {
-      if (_wildcardToRegex(pattern).test(tabId)) return true;
-    }
+function _matchesAny(tabId, patterns) {
+  for (const pat of patterns) {
+    if (pat === tabId) return true;
+    if ((pat.includes("*") || pat.includes("?")) && _wildcardToRegex(pat).test(tabId)) return true;
   }
   return false;
 }
 
 /**
- * Scan all registered sidebar tabs and remove any that match deny patterns.
- * Returns the number of tabs removed in this pass.
+ * Determine whether a tab should be visible.
+ *
+ * Order of precedence:
+ * 1. Explicit deny → always hidden
+ * 2. Built-in tab  → always visible (unless denied)
+ * 3. Explicit allow → visible
+ * 4. default_hidden → hidden if true
+ */
+function _isTabAllowed(tabId) {
+  // Explicit deny always wins
+  if (_matchesAny(tabId, _deniedPatterns)) return false;
+  // Built-in tabs are inherently approved
+  if (BUILTIN_TABS.has(tabId)) return true;
+  // Explicit allow rule
+  if (_matchesAny(tabId, _approvedPatterns)) return true;
+  // Fall through to default
+  return !_defaultHidden;
+}
+
+/**
+ * Scan registered sidebar tabs and remove any that aren't allowed.
  */
 function _enforceFilter() {
-  if (!_filterActive || _isAdmin || _denyPatterns.length === 0) return 0;
+  if (!_filterActive || _isAdmin) return 0;
 
   let removed = 0;
   try {
     const tabs = app.extensionManager.getSidebarTabs();
     for (const tab of tabs) {
       if (_removedTabs.has(tab.id)) continue;
-      if (_isDenied(tab.id)) {
+      if (!_isTabAllowed(tab.id)) {
         try {
           app.extensionManager.unregisterSidebarTab(tab.id);
           _removedTabs.add(tab.id);
           removed++;
-          console.log(`[MultiUser] Removed sidebar tab: ${tab.id}`);
+          console.log(`[MultiUser] Removed unapproved sidebar tab: ${tab.id}`);
         } catch (e) {
           console.warn(`[MultiUser] Failed to remove tab ${tab.id}:`, e.message);
         }
@@ -74,7 +105,7 @@ function _enforceFilter() {
 }
 
 /**
- * Fetch the user's sidebar deny list from the backend and start filtering.
+ * Fetch the user's sidebar rules from the backend and start filtering.
  */
 export async function initTabFilter() {
   try {
@@ -83,14 +114,18 @@ export async function initTabFilter() {
     if (!data) return;
 
     _isAdmin = !!data.is_admin;
-    _denyPatterns = data.hidden_tabs || [];
-
-    if (_isAdmin || _denyPatterns.length === 0) {
-      console.log("[MultiUser] Tab filter: no restrictions (admin or no deny rules)");
+    if (_isAdmin) {
+      console.log("[MultiUser] Tab filter: admin — all tabs visible");
       return;
     }
 
-    console.log("[MultiUser] Tab filter: will hide tabs matching:", _denyPatterns);
+    _approvedPatterns = data.approved_tabs || [];
+    _deniedPatterns = data.denied_tabs || [];
+    _defaultHidden = data.default_hidden !== false; // default true
+
+    console.log("[MultiUser] Tab filter: default_hidden=%s, approved=%o, denied=%o",
+      _defaultHidden, _approvedPatterns, _deniedPatterns);
+
     _filterActive = true;
 
     // Run immediately
@@ -129,7 +164,8 @@ export function stopTabFilter() {
     _pollTimer = null;
   }
   _removedTabs.clear();
-  _denyPatterns = [];
+  _approvedPatterns = [];
+  _deniedPatterns = [];
 }
 
 /**
@@ -147,3 +183,6 @@ export function getRegisteredTabs() {
     return [];
   }
 }
+
+/** Expose BUILTIN_TABS for the admin panel. */
+export { BUILTIN_TABS };
