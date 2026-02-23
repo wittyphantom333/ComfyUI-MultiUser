@@ -117,8 +117,13 @@ function injectStyles() {
 export async function createUserMenu() {
   injectStyles();
 
-  const user = await getCurrentUser();
-  if (!user) return;
+  // Prefer the cached user from login — avoids an extra /me round-trip
+  // that can fail behind reverse proxies.
+  const user = window.__multiuser_current_user || await getCurrentUser();
+  if (!user) {
+    console.warn("[MultiUser] createUserMenu: no user available, skipping");
+    return;
+  }
 
   window.__multiuser_current_user = user;
 

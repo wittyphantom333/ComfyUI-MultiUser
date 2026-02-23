@@ -18,11 +18,16 @@ export async function loadPermissions() {
       const data = await res.json();
       allowedNodes = new Set(data.allowed_nodes);
       isAdmin = data.is_admin;
+      console.log("[MultiUser] Permissions loaded:", allowedNodes.size, "nodes, admin:", isAdmin);
       return data;
     }
+    console.warn("[MultiUser] loadPermissions response not ok:", res.status);
   } catch (e) {
-    console.warn("[MultiUser] Failed to load permissions:", e);
+    console.warn("[MultiUser] Failed to load permissions:", e.message);
   }
+  // Default: allow everything (permission endpoint unreachable)
+  allowedNodes = null;
+  isAdmin = window.__multiuser_current_user?.is_admin || false;
   return null;
 }
 

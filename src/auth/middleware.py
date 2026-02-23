@@ -164,7 +164,13 @@ async def auth_middleware(request: web.Request, handler):
 
 
 async def _try_identify_user(request: web.Request) -> Optional[dict]:
-    """Try to identify the user from headers or cookies (non-failing)."""
+    """Try to identify the user from headers or cookies (non-failing).
+
+    Checks three sources in order:
+      1. Authorization: Bearer header  (standard, but proxies may strip it)
+      2. multiuser_session cookie      (HttpOnly, set by server Set-Cookie)
+      3. multiuser_token cookie         (JS-set, bypasses proxy Set-Cookie issues)
+    """
     user = None
 
     # 1. Authorization header (API tokens / Bearer JWT)
@@ -179,21 +185,35 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
         else:
             user = await _get_user_from_jwt(token)
             if user is None:
-                logger.warning("Bearer JWT verification failed for %s %s (token_len=%d, prefix=%s)",
-                             request.method, request.path, len(token), token[:20])
+                logger.warning("Bearer JWT failed for %s %s (token_len=%d)",
+                             request.method, request.path, len(token))
 
-    # 2. Session cookie
+    # 2. HttpOnly session cookie (set by server)
     if user is None:
         cookie_token = request.cookies.get("multiuser_session")
         if cookie_token:
             user = await _get_user_from_jwt(cookie_token)
             if user is None:
-                logger.debug("Cookie JWT verification failed for %s", request.path)
-        elif auth_header:
-            logger.debug("No session cookie for %s (had auth header but it failed)", request.path)
+                logger.debug("Session cookie JWT failed for %s", request.path)
 
-    if user is None and (auth_header or request.cookies.get("multiuser_session")):
-        logger.debug("All auth methods failed for %s %s", request.method, request.path)
+    # 3. JS-set cookie — most reliable behind reverse proxies because it is
+    #    set with document.cookie in the browser, not via Set-Cookie header.
+    if user is None:
+        from urllib.parse import unquote
+        js_token = request.cookies.get("multiuser_token")
+        if js_token:
+            js_token = unquote(js_token)  # JS uses encodeURIComponent
+            user = await _get_user_from_jwt(js_token)
+            if user is None:
+                logger.debug("JS cookie JWT failed for %s", request.path)
+            else:
+                logger.debug("Auth via JS cookie for %s %s", request.method, request.path)
+
+    if user is None:
+        has_creds = bool(auth_header or request.cookies.get("multiuser_session")
+                         or request.cookies.get("multiuser_token"))
+        if has_creds:
+            logger.warning("All auth methods failed for %s %s", request.method, request.path)
 
     return user
 
