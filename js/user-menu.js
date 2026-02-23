@@ -1,280 +1,449 @@
 /**
- * ComfyUI-MultiUser — User menu widget
- * Integrates into the ComfyUI bottom-left sidebar area next to settings.
+ * ComfyUI-MultiUser — User Profile Sidebar Tab
+ *
+ * Renders user info and actions inside ComfyUI's native sidebar tab.
+ * Registered via app.extensionManager.registerSidebarTab() in multiuser.js.
  */
 
-import { apiPost, getCurrentUser, clearToken } from "./api.js";
+import { apiGet, apiPost, clearToken, authHeaders } from "./api.js";
 
-const USER_MENU_STYLES = `
-  /* ── Bottom-left user button (next to ComfyUI sidebar controls) ── */
-  .mu-user-menu-container {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 9998;
-    pointer-events: none;
+/** Inline styles scoped to the sidebar tab content. */
+const SIDEBAR_CSS = `
+  .mu-sidebar {
+    padding: 12px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #e0e0e0;
+    font-size: 13px;
   }
-  .mu-user-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 12px;
-    background: rgba(30, 30, 46, 0.95);
-    border-top: 1px solid #333;
-    pointer-events: auto;
-    backdrop-filter: blur(8px);
-  }
-  .mu-user-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .mu-user-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 12px;
-    background: transparent;
-    border: 1px solid #444;
-    border-radius: 6px;
-    color: #ccc;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.15s;
-    font-family: inherit;
-  }
-  .mu-user-btn:hover {
-    background: #2a2a3e;
-    border-color: #666;
+  .mu-sidebar h3 {
+    margin: 0 0 4px 0;
+    font-size: 15px;
     color: #fff;
   }
-  .mu-user-avatar {
-    width: 22px;
-    height: 22px;
+  .mu-sidebar .mu-section {
+    background: #222238;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .mu-sidebar .mu-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    margin: 0 0 10px 0;
+  }
+  .mu-sidebar .mu-user-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .mu-sidebar .mu-avatar {
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     background: #7c6cff;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
+    font-size: 18px;
     font-weight: 700;
     color: white;
     flex-shrink: 0;
   }
-  .mu-user-badge {
-    font-size: 9px;
-    padding: 1px 5px;
+  .mu-sidebar .mu-user-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .mu-sidebar .mu-username {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    margin: 0;
+    word-break: break-all;
+  }
+  .mu-sidebar .mu-badge {
+    display: inline-block;
+    padding: 1px 6px;
     border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .mu-sidebar .mu-badge-admin {
     background: #7c6cff;
     color: white;
-    font-weight: 600;
   }
-  .mu-user-right {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .mu-icon-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
+  .mu-sidebar .mu-groups {
+    font-size: 12px;
     color: #888;
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.15s;
+    margin: 2px 0 0 0;
+  }
+  .mu-sidebar .mu-group-tag {
+    display: inline-block;
+    background: #1f2a3d;
+    color: #6bb5ff;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    margin-right: 4px;
+    margin-top: 4px;
+  }
+  .mu-sidebar .mu-action-list {
+    list-style: none;
+    margin: 0;
     padding: 0;
   }
-  .mu-icon-btn:hover {
-    background: #2a2a3e;
-    border-color: #555;
-    color: #fff;
-  }
-  .mu-icon-btn.danger:hover {
-    background: #3d1f1f;
-    color: #ff6b6b;
-  }
-  .mu-icon-btn[title]::after { content: none; }
-  /* ── Dropdown (pops up above the bar) ── */
-  .mu-dropdown {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 12px;
-    background: #1e1e2e;
-    border: 1px solid #444;
-    border-radius: 8px;
-    min-width: 220px;
-    box-shadow: 0 -8px 30px rgba(0,0,0,0.4);
-    display: none;
-    overflow: hidden;
-  }
-  .mu-dropdown.open {
-    display: block;
-  }
-  .mu-dropdown-header {
-    padding: 12px 16px;
-    border-bottom: 1px solid #333;
-    color: #aaa;
-    font-size: 12px;
-  }
-  .mu-dropdown-header strong {
-    color: #e0e0e0;
-    font-size: 13px;
-    display: block;
-    margin-bottom: 2px;
-  }
-  .mu-dropdown-item {
-    padding: 10px 16px;
-    color: #ccc;
-    font-size: 13px;
-    cursor: pointer;
+  .mu-sidebar .mu-action-item {
     display: flex;
     align-items: center;
     gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #ccc;
     transition: background 0.15s;
+    font-size: 13px;
   }
-  .mu-dropdown-item:hover {
+  .mu-sidebar .mu-action-item:hover {
     background: #2a2a3e;
     color: #fff;
   }
-  .mu-dropdown-divider {
-    height: 1px;
-    background: #333;
-    margin: 0;
-  }
-  .mu-dropdown-item.danger {
+  .mu-sidebar .mu-action-item.danger {
     color: #ff6b6b;
   }
-  .mu-dropdown-item.danger:hover {
+  .mu-sidebar .mu-action-item.danger:hover {
     background: #3d1f1f;
+  }
+  .mu-sidebar .mu-action-icon {
+    font-size: 14px;
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .mu-sidebar .mu-divider {
+    height: 1px;
+    background: #333;
+    margin: 8px 0;
+  }
+  .mu-sidebar .mu-token-list {
+    margin-top: 8px;
+  }
+  .mu-sidebar .mu-token-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    background: #1a1a2e;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .mu-sidebar .mu-token-prefix {
+    font-family: monospace;
+    color: #aaa;
+  }
+  .mu-sidebar .mu-token-del {
+    background: none;
+    border: none;
+    color: #ff6b6b;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .mu-sidebar .mu-token-del:hover {
+    background: #3d1f1f;
+  }
+  .mu-sidebar .mu-btn {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .mu-sidebar .mu-btn-primary {
+    background: #7c6cff;
+    color: white;
+  }
+  .mu-sidebar .mu-btn-primary:hover {
+    background: #6a5aee;
+  }
+  .mu-sidebar .mu-btn-sm {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+  .mu-sidebar .mu-btn-outline {
+    background: transparent;
+    border: 1px solid #555;
+    color: #ccc;
+  }
+  .mu-sidebar .mu-btn-outline:hover {
+    background: #2a2a3e;
+  }
+  .mu-sidebar .mu-stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .mu-sidebar .mu-stat-label {
+    color: #888;
+  }
+  .mu-sidebar .mu-stat-value {
+    color: #e0e0e0;
+    font-weight: 600;
   }
 `;
 
-let menuContainer = null;
-let dropdownOpen = false;
+let _stylesInjected = false;
 
-function injectStyles() {
-  if (document.getElementById("mu-usermenu-styles")) return;
+function _injectStyles() {
+  if (_stylesInjected) return;
+  _stylesInjected = true;
   const style = document.createElement("style");
-  style.id = "mu-usermenu-styles";
-  style.textContent = USER_MENU_STYLES;
+  style.id = "mu-sidebar-styles";
+  style.textContent = SIDEBAR_CSS;
   document.head.appendChild(style);
 }
 
-export async function createUserMenu() {
-  injectStyles();
+/**
+ * Render the user profile sidebar tab content.
+ * Called by ComfyUI's sidebar tab system with a DOM element to populate.
+ */
+export function renderUserSidebar(el, user) {
+  _injectStyles();
 
-  // Prefer the cached user from login — avoids an extra round-trip
-  const user = window.__multiuser_current_user || await getCurrentUser();
-  if (!user) {
-    console.warn("[MultiUser] createUserMenu: no user available, skipping");
-    return;
-  }
-
-  window.__multiuser_current_user = user;
-
-  // Remove existing menu if any
-  menuContainer?.remove();
-
-  menuContainer = document.createElement("div");
-  menuContainer.className = "mu-user-menu-container";
+  const container = document.createElement("div");
+  container.className = "mu-sidebar";
 
   const initial = user.username.charAt(0).toUpperCase();
-  const adminBadge = user.is_admin ? ' <span class="mu-user-badge">Admin</span>' : '';
+  const adminBadge = user.is_admin
+    ? '<span class="mu-badge mu-badge-admin">Admin</span>'
+    : '';
+  const groupTags = (user.groups || [])
+    .map(g => `<span class="mu-group-tag">${g.name}</span>`)
+    .join("");
 
-  menuContainer.innerHTML = `
-    <div class="mu-user-bar">
-      <div class="mu-user-left">
-        <button class="mu-user-btn" id="mu-user-trigger">
-          <span class="mu-user-avatar">${initial}</span>
-          <span>${user.username}</span>${adminBadge}
-          <span style="font-size: 9px; opacity: 0.5;">▲</span>
-        </button>
-      </div>
-      <div class="mu-user-right">
-        ${user.is_admin ? '<button class="mu-icon-btn" id="mu-menu-admin" title="Admin Panel">⚙️</button>' : ''}
-        <button class="mu-icon-btn" id="mu-menu-tokens" title="API Tokens">🔑</button>
-        <button class="mu-icon-btn" id="mu-menu-history" title="My Generations">📋</button>
-        <button class="mu-icon-btn" id="mu-menu-password" title="Change Password">🔒</button>
-        <button class="mu-icon-btn danger" id="mu-menu-logout" title="Sign Out">🚪</button>
+  container.innerHTML = `
+    <!-- User Info -->
+    <div class="mu-section">
+      <div class="mu-user-header">
+        <div class="mu-avatar">${initial}</div>
+        <div class="mu-user-info">
+          <p class="mu-username">${user.username}${adminBadge}</p>
+          <div class="mu-groups">${groupTags || '<span style="color:#666">No groups</span>'}</div>
+        </div>
       </div>
     </div>
-    <div class="mu-dropdown" id="mu-user-dropdown">
-      <div class="mu-dropdown-header">
-        <strong>${user.username}</strong>
-        ${user.groups?.map(g => g.name).join(", ") || "No groups"}
+
+    <!-- Quick Actions -->
+    <div class="mu-section">
+      <p class="mu-section-title">Actions</p>
+      <ul class="mu-action-list">
+        <li class="mu-action-item" data-action="password">
+          <span class="mu-action-icon">🔒</span> Change Password
+        </li>
+        <li class="mu-action-item" data-action="tokens">
+          <span class="mu-action-icon">🔑</span> API Tokens
+        </li>
+        <li class="mu-action-item" data-action="stats">
+          <span class="mu-action-icon">📊</span> My Stats
+        </li>
+        <li class="mu-divider"></li>
+        <li class="mu-action-item danger" data-action="logout">
+          <span class="mu-action-icon">🚪</span> Sign Out
+        </li>
+      </ul>
+    </div>
+
+    <!-- API Tokens (hidden by default) -->
+    <div class="mu-section" id="mu-tokens-section" style="display:none;">
+      <p class="mu-section-title">API Tokens</p>
+      <div id="mu-tokens-list" class="mu-token-list">Loading...</div>
+      <div style="margin-top:8px;">
+        <button class="mu-btn mu-btn-sm mu-btn-primary" id="mu-create-token-btn">+ New Token</button>
       </div>
-      ${user.is_admin ? `
-        <div class="mu-dropdown-item" id="mu-dd-admin">
-          ⚙️ Admin Panel
-        </div>
-      ` : ""}
-      <div class="mu-dropdown-item" id="mu-dd-tokens">
-        🔑 API Tokens
-      </div>
-      <div class="mu-dropdown-item" id="mu-dd-history">
-        📋 My Generations
-      </div>
-      <div class="mu-dropdown-item" id="mu-dd-password">
-        🔒 Change Password
-      </div>
-      <div class="mu-dropdown-divider"></div>
-      <div class="mu-dropdown-item danger" id="mu-dd-logout">
-        🚪 Sign Out
-      </div>
+    </div>
+
+    <!-- Stats (hidden by default) -->
+    <div class="mu-section" id="mu-stats-section" style="display:none;">
+      <p class="mu-section-title">My Generation Stats</p>
+      <div id="mu-stats-content">Loading...</div>
     </div>
   `;
 
-  document.body.appendChild(menuContainer);
+  el.appendChild(container);
 
-  // Toggle dropdown from user button
-  const trigger = menuContainer.querySelector("#mu-user-trigger");
-  const dropdown = menuContainer.querySelector("#mu-user-dropdown");
+  // ── Bind actions ──
 
-  trigger.addEventListener("click", (e) => {
-    e.stopPropagation();
-    dropdownOpen = !dropdownOpen;
-    dropdown.classList.toggle("open", dropdownOpen);
+  container.querySelectorAll(".mu-action-item[data-action]").forEach(item => {
+    item.addEventListener("click", () => {
+      const action = item.dataset.action;
+      switch (action) {
+        case "password": _handleChangePassword(); break;
+        case "tokens":   _toggleTokensSection(container); break;
+        case "stats":    _toggleStatsSection(container); break;
+        case "logout":   _handleLogout(); break;
+      }
+    });
   });
 
-  // Close on outside click
-  document.addEventListener("click", () => {
-    dropdownOpen = false;
-    dropdown.classList.remove("open");
+  container.querySelector("#mu-create-token-btn")?.addEventListener("click", () => {
+    _createApiToken(container);
   });
+}
 
-  // Prevent dropdown clicks from closing it
-  dropdown.addEventListener("click", (e) => e.stopPropagation());
+// ── Action Implementations ──
 
-  // ── Actions (bar icons + dropdown items) ──
+async function _handleChangePassword() {
+  const { showToast } = await import("./multiuser.js");
+  const current = prompt("Current password:");
+  if (!current) return;
+  const newPw = prompt("New password (min 8 characters):");
+  if (!newPw) return;
+  const confirmPw = prompt("Confirm new password:");
+  if (newPw !== confirmPw) {
+    showToast("warn", "Password", "Passwords don't match");
+    return;
+  }
+  try {
+    const res = await fetch("/multiuser/change-password", {
+      method: "POST",
+      credentials: "include",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: current, new_password: newPw }),
+    });
+    const data = await res.json();
+    if (res.ok) showToast("success", "Password", "Changed successfully");
+    else showToast("error", "Password", data.error || "Error");
+  } catch (e) {
+    showToast("error", "Password", e.message);
+  }
+}
 
-  const logoutAction = async () => {
-    try { await apiPost("/logout"); } catch {}
-    clearToken();
-    location.reload();
-  };
+async function _handleLogout() {
+  try { await apiPost("/logout"); } catch {}
+  clearToken();
+  window.__multiuser_current_user = null;
+  location.reload();
+}
 
-  const adminAction = () => window.dispatchEvent(new CustomEvent("multiuser-open-admin"));
-  const tokensAction = () => window.dispatchEvent(new CustomEvent("multiuser-open-tokens"));
-  const historyAction = () => window.dispatchEvent(new CustomEvent("multiuser-open-history"));
-  const passwordAction = () => window.dispatchEvent(new CustomEvent("multiuser-open-password"));
+async function _toggleTokensSection(container) {
+  const section = container.querySelector("#mu-tokens-section");
+  if (!section) return;
+  const isVisible = section.style.display !== "none";
+  section.style.display = isVisible ? "none" : "block";
+  if (!isVisible) await _loadTokens(container);
+}
 
-  // Bar icon buttons
-  menuContainer.querySelector("#mu-menu-logout")?.addEventListener("click", logoutAction);
-  menuContainer.querySelector("#mu-menu-admin")?.addEventListener("click", adminAction);
-  menuContainer.querySelector("#mu-menu-tokens")?.addEventListener("click", tokensAction);
-  menuContainer.querySelector("#mu-menu-history")?.addEventListener("click", historyAction);
-  menuContainer.querySelector("#mu-menu-password")?.addEventListener("click", passwordAction);
+async function _toggleStatsSection(container) {
+  const section = container.querySelector("#mu-stats-section");
+  if (!section) return;
+  const isVisible = section.style.display !== "none";
+  section.style.display = isVisible ? "none" : "block";
+  if (!isVisible) await _loadStats(container);
+}
 
-  // Dropdown items
-  menuContainer.querySelector("#mu-dd-logout")?.addEventListener("click", logoutAction);
-  menuContainer.querySelector("#mu-dd-admin")?.addEventListener("click", adminAction);
-  menuContainer.querySelector("#mu-dd-tokens")?.addEventListener("click", tokensAction);
-  menuContainer.querySelector("#mu-dd-history")?.addEventListener("click", historyAction);
-  menuContainer.querySelector("#mu-dd-password")?.addEventListener("click", passwordAction);
+async function _loadTokens(container) {
+  const list = container.querySelector("#mu-tokens-list");
+  if (!list) return;
+  try {
+    const res = await apiGet("/my-tokens");
+    const data = await res.json();
+    const tokens = data.tokens || [];
+    if (tokens.length === 0) {
+      list.innerHTML = '<div style="color:#666;font-size:12px;">No API tokens yet.</div>';
+      return;
+    }
+    list.innerHTML = tokens.map(t => `
+      <div class="mu-token-item">
+        <span>
+          <span class="mu-token-prefix">${t.prefix}...</span>
+          <span style="color:#666;margin-left:6px;">${t.name || "Unnamed"}</span>
+        </span>
+        <button class="mu-token-del" data-token-id="${t.id}" title="Revoke">×</button>
+      </div>
+    `).join("");
+    // Bind delete buttons
+    list.querySelectorAll(".mu-token-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const { apiDelete } = await import("./api.js");
+        const { showToast } = await import("./multiuser.js");
+        try {
+          await apiDelete(`/my-tokens/${btn.dataset.tokenId}`);
+          showToast("success", "Token", "Token revoked");
+          _loadTokens(container);
+        } catch (e) {
+          showToast("error", "Token", e.message);
+        }
+      });
+    });
+  } catch (e) {
+    list.innerHTML = `<div style="color:#ff6b6b;font-size:12px;">Error: ${e.message}</div>`;
+  }
+}
+
+async function _loadStats(container) {
+  const content = container.querySelector("#mu-stats-content");
+  if (!content) return;
+  try {
+    const res = await apiGet("/generations/my-stats");
+    if (!res.ok) {
+      // Fallback to global stats if personal stats endpoint doesn't exist
+      const res2 = await apiGet("/generations/stats");
+      const stats = await res2.json();
+      content.innerHTML = _renderStatsHtml(stats);
+      return;
+    }
+    const stats = await res.json();
+    content.innerHTML = _renderStatsHtml(stats);
+  } catch (e) {
+    content.innerHTML = `<div style="color:#ff6b6b;font-size:12px;">Error: ${e.message}</div>`;
+  }
+}
+
+function _renderStatsHtml(stats) {
+  return `
+    <div class="mu-stat-row">
+      <span class="mu-stat-label">Total Generations</span>
+      <span class="mu-stat-value">${stats.total || 0}</span>
+    </div>
+    <div class="mu-stat-row">
+      <span class="mu-stat-label">Completed</span>
+      <span class="mu-stat-value">${stats.completed || 0}</span>
+    </div>
+    <div class="mu-stat-row">
+      <span class="mu-stat-label">Errors</span>
+      <span class="mu-stat-value">${stats.errors || 0}</span>
+    </div>
+    <div class="mu-stat-row">
+      <span class="mu-stat-label">Avg Time</span>
+      <span class="mu-stat-value">${stats.avg_time_ms ? (stats.avg_time_ms / 1000).toFixed(1) + "s" : "—"}</span>
+    </div>
+  `;
+}
+
+async function _createApiToken(container) {
+  const { showToast } = await import("./multiuser.js");
+  const name = prompt("Token name (optional):");
+  try {
+    const res = await apiPost("/my-tokens", { name: name || "API Token" });
+    const data = await res.json();
+    if (res.ok && data.token) {
+      // Show the token once — it can't be retrieved again
+      prompt("Copy this token now (it won't be shown again):", data.token);
+      showToast("success", "Token", "API token created");
+      _loadTokens(container);
+    } else {
+      showToast("error", "Token", data.error || "Error creating token");
+    }
+  } catch (e) {
+    showToast("error", "Token", e.message);
+  }
 }

@@ -1,22 +1,52 @@
 /**
  * ComfyUI-MultiUser — Main Extension
- * 
- * Registers the multiuser extension with ComfyUI, hooks into the lifecycle,
- * and coordinates auth, permissions, and UI components.
+ *
+ * Registers the multiuser extension with ComfyUI using its native APIs:
+ *   - Sidebar tabs (user profile + admin panel)
+ *   - Bottom panel tabs (generation stats)
+ *   - Canvas right-click menu items
+ *   - Settings panel entries
+ *   - Toast notifications
+ *
+ * Coordinates auth, permissions, and UI components.
  */
 
 import { app } from "../../scripts/app.js";
-import { getCurrentUser } from "./api.js";
+import { getCurrentUser, clearToken, apiPost, authHeaders } from "./api.js";
 import { showAuthOverlay } from "./auth-ui.js";
 import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
-import { createUserMenu } from "./user-menu.js";
-import { openAdminPanel } from "./admin-panel.js";
+import { renderUserSidebar } from "./user-menu.js";
+import { renderAdminSidebar } from "./admin-panel.js";
 
-// Shared auth state — set during init(), read during setup()
+/** Shared auth state */
 let _authenticated = false;
+let _currentUser = null;
+
+/** Show a native ComfyUI toast (falls back to console if API unavailable). */
+export function showToast(severity, summary, detail, life = 3000) {
+  try {
+    app.extensionManager.toast.add({ severity, summary, detail, life });
+  } catch {
+    console.log(`[MultiUser] ${severity}: ${summary} — ${detail}`);
+  }
+}
 
 app.registerExtension({
   name: "comfyui.multiuser",
+
+  /**
+   * Settings shown in ComfyUI's Settings panel under "MultiUser".
+   */
+  settings: [
+    {
+      id: "multiuser.notifications",
+      name: "Show generation notifications",
+      type: "boolean",
+      defaultValue: true,
+      category: ["MultiUser", "General", "Notifications"],
+      tooltip: "Show toast notifications when generations complete or fail",
+    },
+  ],
 
   /**
    * Called early during init — before nodes are registered.
@@ -24,115 +54,146 @@ app.registerExtension({
    */
   async init() {
     console.log("[MultiUser] init() — checking auth state");
-    console.log("[MultiUser] localStorage token exists:", !!localStorage.getItem("multiuser_token"));
     let user = await getCurrentUser();
-    console.log("[MultiUser] getCurrentUser result:", user);
 
     if (!user) {
-      console.log("[MultiUser] Not authenticated, showing login overlay (blocking)");
-      // showAuthOverlay returns a Promise that resolves once the user
-      // has successfully logged in — no page reload needed.
+      console.log("[MultiUser] Not authenticated, showing login overlay");
       user = await showAuthOverlay();
-      console.log("[MultiUser] Auth overlay resolved with user:", user?.username);
     }
 
     if (!user) {
-      // Shouldn't happen, but guard anyway
       console.error("[MultiUser] Auth flow completed but no user — aborting");
       _authenticated = false;
       return;
     }
 
-    // User is authenticated — load their permissions
     _authenticated = true;
-    console.log("[MultiUser] Authenticated as:", user.username, "admin:", user.is_admin);
+    _currentUser = user;
     window.__multiuser_current_user = user;
-    await loadPermissions();
-    console.log("[MultiUser] Permissions loaded, setting up UI");
+    console.log("[MultiUser] Authenticated as:", user.username, "admin:", user.is_admin);
 
-    // Set up the menu and event listeners now (since setup() may have
-    // already fired while the overlay was showing)
-    await _setupUI();
+    await loadPermissions();
   },
 
   /**
    * Called for each node type during registration.
-   * We filter out nodes the user doesn't have permission to use.
+   * Filter out nodes the user doesn't have permission to use.
    */
-  async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (!_authenticated) return; // not logged in yet — skip filtering
-
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!_authenticated) return;
     const className = nodeData.name || nodeType.comfyClass;
     if (!className) return;
-
     if (!isNodeAllowed(className)) {
-      // Hide this node by removing it from the category
-      // This prevents it from appearing in the Add Node menu
       nodeData.category = "__hidden__";
     }
   },
 
   /**
    * Called after ComfyUI is fully set up.
-   * We add the user menu and bind event listeners.
+   * Register native UI components (sidebar tabs, bottom panel, etc.).
    */
   async setup() {
-    // If already authenticated (user was logged in from the start),
-    // set up UI now. Otherwise init() will call _setupUI after overlay resolves.
-    if (_authenticated) {
-      await _setupUI();
+    if (!_authenticated || !_currentUser) return;
+
+    // ── Register User Profile sidebar tab ──
+    try {
+      app.extensionManager.registerSidebarTab({
+        id: "multiuser-profile",
+        icon: "pi pi-user",
+        title: "MultiUser",
+        tooltip: `Signed in as ${_currentUser.username}`,
+        type: "custom",
+        render: (el) => renderUserSidebar(el, _currentUser),
+      });
+    } catch (e) {
+      console.warn("[MultiUser] Could not register user sidebar tab:", e.message);
     }
+
+    // ── Register Admin sidebar tab (admins only) ──
+    if (_currentUser.is_admin) {
+      try {
+        app.extensionManager.registerSidebarTab({
+          id: "multiuser-admin",
+          icon: "pi pi-cog",
+          title: "Admin",
+          tooltip: "MultiUser Administration",
+          type: "custom",
+          render: (el) => renderAdminSidebar(el),
+        });
+      } catch (e) {
+        console.warn("[MultiUser] Could not register admin sidebar tab:", e.message);
+      }
+    }
+
+    console.log("[MultiUser] Native UI setup complete");
+  },
+
+  /**
+   * Canvas right-click menu items for quick user actions.
+   */
+  getCanvasMenuItems() {
+    if (!_authenticated || !_currentUser) return [];
+
+    const items = [];
+
+    // Separator + header
+    items.push(null); // separator in LiteGraph
+    items.push({
+      content: `MultiUser: ${_currentUser.username}${_currentUser.is_admin ? " (Admin)" : ""}`,
+      disabled: true,
+    });
+
+    items.push({
+      content: "Change Password",
+      callback: _changePassword,
+    });
+
+    items.push({
+      content: "Sign Out",
+      callback: _logout,
+    });
+
+    return items;
   },
 });
 
-// ── Shared UI bootstrap — called from init() or setup() ──
+// ── Action handlers ──
 
-let _uiReady = false;
-
-async function _setupUI() {
-  if (_uiReady) return; // idempotent guard
-  _uiReady = true;
-  console.log("[MultiUser] _setupUI — creating user menu");
-
-  await createUserMenu();
-
-  window.addEventListener("multiuser-open-admin", () => openAdminPanel());
-
-  window.addEventListener("multiuser-open-tokens", () => {
-    openAdminPanel();
-    setTimeout(() => {
-      document.querySelector('.mu-admin-tab[data-tab="tokens"]')?.click();
-    }, 100);
-  });
-
-  window.addEventListener("multiuser-open-history", () => {
-    openAdminPanel();
-    setTimeout(() => {
-      document.querySelector('.mu-admin-tab[data-tab="stats"]')?.click();
-    }, 100);
-  });
-
-  window.addEventListener("multiuser-open-password", () => {
+async function _changePassword() {
+  try {
     const current = prompt("Current password:");
     if (!current) return;
     const newPw = prompt("New password (min 8 characters):");
     if (!newPw) return;
-    const confirm = prompt("Confirm new password:");
-    if (newPw !== confirm) { alert("Passwords don't match"); return; }
+    const confirmPw = prompt("Confirm new password:");
+    if (newPw !== confirmPw) {
+      showToast("warn", "Password", "Passwords don't match");
+      return;
+    }
 
-    import("./api.js").then(({ authHeaders }) => {
-      fetch("/multiuser/change-password", {
-        method: "POST",
-        credentials: "include",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ current_password: current, new_password: newPw }),
-      }).then(async res => {
-        const data = await res.json();
-        if (res.ok) alert("Password changed successfully!");
-        else alert(data.error || "Error changing password");
-      });
+    const res = await fetch("/multiuser/change-password", {
+      method: "POST",
+      credentials: "include",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: current, new_password: newPw }),
     });
-  });
-
-  console.log("[MultiUser] UI setup complete");
+    const data = await res.json();
+    if (res.ok) {
+      showToast("success", "Password", "Password changed successfully");
+    } else {
+      showToast("error", "Password", data.error || "Error changing password");
+    }
+  } catch (e) {
+    showToast("error", "Password", "Network error: " + e.message);
+  }
 }
+
+async function _logout() {
+  try { await apiPost("/logout"); } catch {}
+  clearToken();
+  window.__multiuser_current_user = null;
+  location.reload();
+}
+
+// Export for other modules
+export { _currentUser, _authenticated, _logout, _changePassword };
