@@ -113,8 +113,6 @@ const CSS = `
 .mu-badge-fmt[data-fmt="AVI"]{color:#78909c;border-color:rgba(120,144,156,.3)}
 .mu-badge-fmt[data-fmt="BMP"]{color:#9e9e9e;border-color:rgba(158,158,158,.3)}
 .mu-badge-fmt[data-fmt="TIFF"]{color:#a1887f;border-color:rgba(161,136,127,.3)}
-/* Name-collision "+" variants — red alert background (Majoor convention) */
-.mu-badge-fmt.has-meta{text-shadow:none;font-weight:800;color:#fff;background:rgba(255,23,68,.85);border-color:rgba(255,23,68,.6)}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
@@ -443,10 +441,6 @@ async function _load() {
     if (!r.ok) { const e = await r.json().catch(()=>({})); grid.innerHTML = `<div class="mu-empty">${e.error||"Failed to load"}</div>`; return; }
     const d = await r.json();
     _files = d.files||[]; _total = d.total||0; _pages = d.pages||0;
-    // Compute name collisions (Majoor convention: "+" = duplicate filename in view)
-    const nameCount = {};
-    for (const f of _files) { nameCount[f.filename] = (nameCount[f.filename]||0) + 1; }
-    for (const f of _files) { f._collision = (nameCount[f.filename] || 0) > 1; }
     _renderGrid(grid);
     _renderPag();
   } catch(e) { grid.innerHTML = `<div class="mu-empty">${e.message}</div>`; }
@@ -515,15 +509,12 @@ function _renderGrid(grid) {
     img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // format badge (PNG, PNG+, MP4, MP4+, etc.) — "+" = name collision
+    // format badge (PNG, MP4, JPG, etc.)
     {
       const fmt = f.format || f.filename.split(".").pop().toUpperCase();
-      const collision = !!f._collision;
-      const label = collision ? fmt + "+" : fmt;
-      const b = _mk("div","mu-badge mu-badge-fmt" + (collision ? " has-meta" : ""));
+      const b = _mk("div","mu-badge mu-badge-fmt");
       b.setAttribute("data-fmt", fmt);
-      b.textContent = label;
-      if (collision) b.title = `Name collision: multiple files named "${f.filename}"`;
+      b.textContent = fmt;
       item.appendChild(b);
     }
     // tag count badge
