@@ -3,7 +3,7 @@
  * Adds a user profile dropdown to the ComfyUI top bar area.
  */
 
-import { apiPost, getCurrentUser } from "./api.js";
+import { apiPost, getCurrentUser, clearToken } from "./api.js";
 
 const USER_MENU_STYLES = `
   .mu-user-menu-container {
@@ -185,6 +185,7 @@ export async function createUserMenu() {
   // Menu actions
   menuContainer.querySelector("#mu-menu-logout")?.addEventListener("click", async () => {
     await apiPost("/logout");
+    clearToken();
     location.reload();
   });
 

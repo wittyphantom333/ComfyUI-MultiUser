@@ -3,7 +3,7 @@
  * Creates a full-screen overlay for authentication when user is not logged in.
  */
 
-import { checkSetupStatus } from "./api.js";
+import { checkSetupStatus, storeToken } from "./api.js";
 
 const STYLES = `
   .mu-auth-overlay {
@@ -231,7 +231,12 @@ async function handleSubmit(e, isSetup) {
       return;
     }
 
-    // Success — store user info and remove overlay
+    // Success — store token for Bearer-header fallback
+    if (data.token) {
+      storeToken(data.token);
+    }
+
+    // Store user info and remove overlay
     window.__multiuser_current_user = data.user;
     hideAuthOverlay();
     window.dispatchEvent(new CustomEvent("multiuser-auth-success", { detail: data.user }));

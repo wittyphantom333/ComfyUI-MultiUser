@@ -135,6 +135,7 @@ def setup_auth_routes(routes):
         token = create_jwt(user_id, username, bool(is_admin))
         response = web.json_response({
             "success": True,
+            "token": token,
             "user": {
                 "id": user_id,
                 "username": username,
@@ -232,6 +233,7 @@ def setup_auth_routes(routes):
         token = create_jwt(user["id"], user["username"], bool(user["is_admin"]))
         response = web.json_response({
             "success": True,
+            "token": token,
             "user": {
                 "id": user["id"],
                 "username": user["username"],
