@@ -23,18 +23,21 @@ app.registerExtension({
    * We check auth state here and show login if needed.
    */
   async init() {
+    console.log("[MultiUser] init() — checking auth state");
+    console.log("[MultiUser] localStorage token exists:", !!localStorage.getItem("multiuser_token"));
     const user = await getCurrentUser();
+    console.log("[MultiUser] getCurrentUser result:", user);
 
     if (!user) {
       _authenticated = false;
-      // Show login overlay — the overlay calls location.reload()
-      // on successful login, so we'll re-enter init() authenticated.
+      console.log("[MultiUser] Not authenticated, showing login overlay");
       showAuthOverlay();
       return;
     }
 
     // User is authenticated — load their permissions
     _authenticated = true;
+    console.log("[MultiUser] Authenticated as:", user.username, "admin:", user.is_admin);
     window.__multiuser_current_user = user;
     await loadPermissions();
   },

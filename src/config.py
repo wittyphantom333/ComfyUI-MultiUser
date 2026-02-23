@@ -67,9 +67,21 @@ def load_config(force_reload: bool = False) -> dict:
                 value = int(value)
             obj[path[-1]] = value
 
-    # Generate secret key if not set
+    # Generate secret key if not set — persist to file so it survives restarts
     if not _config["auth"]["secret_key"]:
-        _config["auth"]["secret_key"] = secrets.token_hex(32)
+        secret_file = _BASE_DIR / "data" / ".secret_key"
+        if secret_file.exists():
+            _config["auth"]["secret_key"] = secret_file.read_text().strip()
+        else:
+            new_key = secrets.token_hex(32)
+            _config["auth"]["secret_key"] = new_key
+            secret_file.parent.mkdir(parents=True, exist_ok=True)
+            secret_file.write_text(new_key)
+            # Restrict permissions (best-effort)
+            try:
+                secret_file.chmod(0o600)
+            except OSError:
+                pass
 
     # Resolve SQLite path
     sqlite_path = _config["database"]["sqlite"]["path"]

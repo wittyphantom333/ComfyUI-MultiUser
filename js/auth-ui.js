@@ -215,6 +215,7 @@ async function handleSubmit(e, isSetup) {
   if (email) body.email = email;
 
   try {
+    console.log("[MultiUser] Login POST to:", endpoint);
     const res = await fetch(endpoint, {
       method: "POST",
       credentials: "include",
@@ -222,9 +223,23 @@ async function handleSubmit(e, isSetup) {
       body: JSON.stringify(body),
     });
 
-    const data = await res.json();
+    console.log("[MultiUser] Login response status:", res.status);
+    const text = await res.text();
+    console.log("[MultiUser] Login response body:", text);
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (parseErr) {
+      console.error("[MultiUser] Failed to parse login response as JSON:", parseErr);
+      showError("Server returned an invalid response. Check server logs.");
+      btn.disabled = false;
+      btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
+      return;
+    }
 
     if (!res.ok) {
+      console.warn("[MultiUser] Login failed:", data.error);
       showError(data.error || "An error occurred");
       btn.disabled = false;
       btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
@@ -232,8 +247,12 @@ async function handleSubmit(e, isSetup) {
     }
 
     // Success — store token for Bearer-header fallback
+    console.log("[MultiUser] Login success, token present:", !!data.token);
     if (data.token) {
       storeToken(data.token);
+      console.log("[MultiUser] Token stored in localStorage, key: multiuser_token, length:", data.token.length);
+    } else {
+      console.warn("[MultiUser] No token in login response!");
     }
 
     // Store user info and remove overlay
@@ -241,10 +260,12 @@ async function handleSubmit(e, isSetup) {
     hideAuthOverlay();
     window.dispatchEvent(new CustomEvent("multiuser-auth-success", { detail: data.user }));
     
-    // Reload to initialize ComfyUI with auth
-    location.reload();
+    // Small delay to ensure localStorage is flushed, then reload
+    console.log("[MultiUser] Reloading page...");
+    setTimeout(() => location.reload(), 100);
   } catch (err) {
-    showError("Network error. Please try again.");
+    console.error("[MultiUser] Login fetch error:", err);
+    showError("Network error: " + err.message);
     btn.disabled = false;
     btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
   }

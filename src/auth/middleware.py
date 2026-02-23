@@ -147,11 +147,13 @@ async def auth_middleware(request: web.Request, handler):
     user = await _try_identify_user(request)
 
     if user is None:
+        logger.debug("Auth failed for protected route: %s %s", method, path)
         return web.json_response(
             {"error": "Authentication required"},
             status=401
         )
 
+    logger.debug("Auth OK: %s %s (user=%s)", method, path, user.get("username"))
     request["multiuser_user"] = user
     return await handler(request)
 
@@ -168,12 +170,16 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
             user = await _get_user_from_api_token(token)
         else:
             user = await _get_user_from_jwt(token)
+            if user is None:
+                logger.debug("Bearer JWT verification failed for %s", request.path)
 
     # 2. Session cookie
     if user is None:
         cookie_token = request.cookies.get("multiuser_session")
         if cookie_token:
             user = await _get_user_from_jwt(cookie_token)
+            if user is None:
+                logger.debug("Cookie JWT verification failed for %s", request.path)
 
     return user
 

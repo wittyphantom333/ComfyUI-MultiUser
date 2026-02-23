@@ -152,20 +152,25 @@ def setup_auth_routes(routes):
         try:
             data = await request.json()
         except Exception:
+            logger.warning("Login: invalid JSON body")
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         username = data.get("username", "").strip()
         password = data.get("password", "")
 
         if not username or not password:
+            logger.warning("Login: missing username or password")
             return web.json_response(
                 {"error": "Username and password required"}, status=400
             )
+
+        logger.info("Login attempt for user: %s", username)
 
         user = await db.fetchone(
             "SELECT * FROM users WHERE username = ?", (username,)
         )
         if user is None:
+            logger.warning("Login: user '%s' not found", username)
             return web.json_response(
                 {"error": "Invalid username or password"}, status=401
             )
@@ -222,6 +227,7 @@ def setup_auth_routes(routes):
             )
 
         # Successful login - reset failed attempts
+        logger.info("Login successful for user: %s (id=%d)", user["username"], user["id"])
         await db.execute(
             """UPDATE users SET 
                failed_login_attempts = 0, locked_until = NULL,
