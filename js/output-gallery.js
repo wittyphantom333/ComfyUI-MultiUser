@@ -101,7 +101,7 @@ const CSS = `
   background:rgba(0,0,0,.7);
   color:#aab;
 }
-/* Per-format colors (non-'+' = muted, '+' = vibrant) */
+/* Per-format colors — type-specific colored text on dark background */
 .mu-badge-fmt[data-fmt="PNG"]{color:#66bb6a;border-color:rgba(102,187,106,.3)}
 .mu-badge-fmt[data-fmt="JPG"],.mu-badge-fmt[data-fmt="JPEG"]{color:#ffa726;border-color:rgba(255,167,38,.3)}
 .mu-badge-fmt[data-fmt="WEBP"]{color:#42a5f5;border-color:rgba(66,165,245,.3)}
@@ -113,17 +113,8 @@ const CSS = `
 .mu-badge-fmt[data-fmt="AVI"]{color:#78909c;border-color:rgba(120,144,156,.3)}
 .mu-badge-fmt[data-fmt="BMP"]{color:#9e9e9e;border-color:rgba(158,158,158,.3)}
 .mu-badge-fmt[data-fmt="TIFF"]{color:#a1887f;border-color:rgba(161,136,127,.3)}
-/* '+' variants — brighter and bolder background */
-.mu-badge-fmt.has-meta{text-shadow:none;font-weight:800}
-.mu-badge-fmt.has-meta[data-fmt="PNG"]{color:#fff;background:rgba(76,175,80,.85);border-color:rgba(76,175,80,.6)}
-.mu-badge-fmt.has-meta[data-fmt="JPG"],.mu-badge-fmt.has-meta[data-fmt="JPEG"]{color:#fff;background:rgba(245,124,0,.85);border-color:rgba(245,124,0,.6)}
-.mu-badge-fmt.has-meta[data-fmt="WEBP"]{color:#fff;background:rgba(30,136,229,.85);border-color:rgba(30,136,229,.6)}
-.mu-badge-fmt.has-meta[data-fmt="GIF"]{color:#fff;background:rgba(156,39,176,.85);border-color:rgba(156,39,176,.6)}
-.mu-badge-fmt.has-meta[data-fmt="MP4"]{color:#fff;background:rgba(229,57,53,.85);border-color:rgba(229,57,53,.6)}
-.mu-badge-fmt.has-meta[data-fmt="WEBM"]{color:#fff;background:rgba(216,27,96,.85);border-color:rgba(216,27,96,.6)}
-.mu-badge-fmt.has-meta[data-fmt="MOV"]{color:#fff;background:rgba(244,81,30,.85);border-color:rgba(244,81,30,.6)}
-.mu-badge-fmt.has-meta[data-fmt="MKV"]{color:#fff;background:rgba(109,76,65,.85);border-color:rgba(109,76,65,.6)}
-.mu-badge-fmt.has-meta[data-fmt="AVI"]{color:#fff;background:rgba(84,110,122,.85);border-color:rgba(84,110,122,.6)}
+/* Name-collision "+" variants — red alert background (Majoor convention) */
+.mu-badge-fmt.has-meta{text-shadow:none;font-weight:800;color:#fff;background:rgba(255,23,68,.85);border-color:rgba(255,23,68,.6)}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
@@ -452,6 +443,10 @@ async function _load() {
     if (!r.ok) { const e = await r.json().catch(()=>({})); grid.innerHTML = `<div class="mu-empty">${e.error||"Failed to load"}</div>`; return; }
     const d = await r.json();
     _files = d.files||[]; _total = d.total||0; _pages = d.pages||0;
+    // Compute name collisions (Majoor convention: "+" = duplicate filename in view)
+    const nameCount = {};
+    for (const f of _files) { nameCount[f.filename] = (nameCount[f.filename]||0) + 1; }
+    for (const f of _files) { f._collision = (nameCount[f.filename] || 0) > 1; }
     _renderGrid(grid);
     _renderPag();
   } catch(e) { grid.innerHTML = `<div class="mu-empty">${e.message}</div>`; }
@@ -520,13 +515,15 @@ function _renderGrid(grid) {
     img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // format badge (PNG, PNG+, MP4, MP4+, etc.)
+    // format badge (PNG, PNG+, MP4, MP4+, etc.) — "+" = name collision
     {
       const fmt = f.format || f.filename.split(".").pop().toUpperCase();
-      const label = f.has_meta ? fmt + "+" : fmt;
-      const b = _mk("div","mu-badge mu-badge-fmt" + (f.has_meta ? " has-meta" : ""));
+      const collision = !!f._collision;
+      const label = collision ? fmt + "+" : fmt;
+      const b = _mk("div","mu-badge mu-badge-fmt" + (collision ? " has-meta" : ""));
       b.setAttribute("data-fmt", fmt);
       b.textContent = label;
+      if (collision) b.title = `Name collision: multiple files named "${f.filename}"`;
       item.appendChild(b);
     }
     // tag count badge

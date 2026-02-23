@@ -132,141 +132,7 @@ def _file_info(path: Path, output_dir: Path) -> dict:
         "modified": mtime,
         "type": "video" if ext in VIDEO_EXTS else "image",
         "format": ext.lstrip(".").upper(),  # PNG, JPG, MP4, WEBM, etc.
-        "has_meta": False,  # set later by _detect_workflow_batch
     }
-
-
-# Sampling input keys that confirm a node is a real sampler (not just named like one).
-# Matches Majoor's _sampler_inputs_look_sampling() check.
-_SAMPLING_INPUT_KEYS = {"steps", "cfg", "cfg_scale", "seed", "denoise"}
-
-
-def _node_is_sampler(node: dict) -> bool:
-    """Check if a prompt-graph node looks like a real sampler.
-
-    Matches Majoor's _node_looks_like_sampler(node, require_sampling_inputs=True):
-    1. class_type contains 'ksampler', 'samplercustom', or 'sampler'
-    2. BUT NOT if class_type contains 'select' (KSamplerSelect etc.)
-    3. Node inputs must contain at least one sampling key (steps/cfg/seed/denoise)
-    """
-    ct = str(node.get("class_type", "")).lower()
-    if not ct:
-        return False
-    # Exclude selector/utility nodes
-    if "select" in ct:
-        return False
-    # Must match a sampler-like class_type
-    if not ("ksampler" in ct or "samplercustom" in ct or "sampler" in ct):
-        return False
-    # For prompt graphs, require actual sampling inputs
-    inputs = node.get("inputs")
-    if not isinstance(inputs, dict):
-        return False
-    return bool(_SAMPLING_INPUT_KEYS & inputs.keys())
-
-
-def _prompt_has_sampler(prompt_text: str) -> bool:
-    """Check if a prompt JSON graph contains a real sampler node.
-
-    The prompt graph is a dict of node_id → {class_type, inputs, ...}.
-    A sampler node (with real sampling inputs) means actual generation occurred.
-    Returns False on parse failure — better to miss a '+' than show a false one.
-    """
-    try:
-        graph = json.loads(prompt_text)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return False
-
-    if not isinstance(graph, dict):
-        return False
-
-    for node in graph.values():
-        if isinstance(node, dict) and _node_is_sampler(node):
-            return True
-    return False
-
-
-def _has_generation_data(path: Path) -> bool:
-    """Check whether a file contains actual *generation* data (sampler node).
-
-    Matches the Majoor Assets Manager convention:
-      '+' = the executed prompt graph contains a sampler node (KSampler, etc.),
-            meaning the file was produced by a generation workflow.
-      no '+' = no prompt metadata, or a workflow without sampling (upscale,
-               compositing, utility, or non-ComfyUI image).
-
-    Uses PIL to properly read PNG text chunks (which live AFTER the image
-    data and may be compressed), avoiding the brittle binary scanning approach.
-    """
-    ext = path.suffix.lower()
-    try:
-        if ext == ".png" and _HAS_PIL:
-            img = Image.open(path)
-            prompt_text = (img.info or {}).get("prompt", "")
-            if not prompt_text:
-                logger.debug("[badge] %s: PNG no prompt chunk → False", path.name)
-                return False
-            result = _prompt_has_sampler(prompt_text)
-            logger.debug("[badge] %s: PNG prompt len=%d → %s", path.name, len(prompt_text), result)
-            return result
-
-        if ext in VIDEO_EXTS:
-            # VHS sidecar PNG
-            sidecar = path.with_suffix(".png")
-            if sidecar.exists() and sidecar.is_file() and _HAS_PIL:
-                img = Image.open(sidecar)
-                prompt_text = (img.info or {}).get("prompt", "")
-                if prompt_text:
-                    return _prompt_has_sampler(prompt_text)
-            return False
-
-        if ext == ".webp" and _HAS_PIL:
-            img = Image.open(path)
-            exif = img.getexif()
-            if exif:
-                val = exif.get(0x0110, "")
-                if isinstance(val, str) and val.strip().startswith("{"):
-                    return _prompt_has_sampler(val)
-            return False
-
-        if ext in (".jpg", ".jpeg") and _HAS_PIL:
-            img = Image.open(path)
-            exif = img.getexif()
-            if exif:
-                val = exif.get(0x9286, "")  # UserComment
-                if isinstance(val, str) and val.strip().startswith("{"):
-                    return _prompt_has_sampler(val)
-            return False
-    except Exception:
-        pass
-    return False
-
-
-async def _detect_workflow_batch(files: list[dict], output_dir: Path) -> None:
-    """Batch-detect workflow/metadata presence for a list of _file_info dicts."""
-    if not files:
-        return
-
-    detected = 0
-    skipped = 0
-    for f in files:
-        if f["has_meta"]:
-            skipped += 1
-            continue
-        try:
-            full = output_dir / f["relative_path"]
-            if full.exists():
-                result = _has_generation_data(full)
-                f["has_meta"] = result
-                if result:
-                    detected += 1
-        except Exception as exc:
-            logger.debug("detect_workflow error for %s: %s", f.get("filename"), exc)
-
-    logger.info(
-        "[badge-detect] %d files: %d with gen-data, %d without, %d pre-set  (PIL=%s)",
-        len(files), detected, len(files) - detected - skipped, skipped, _HAS_PIL,
-    )
 
 
 def _generate_image_thumbnail(src: Path, dst: Path, size: int) -> bool:
@@ -762,9 +628,6 @@ def setup_output_routes(routes):
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
 
-        # Detect workflow/metadata presence for the current page only
-        await _detect_workflow_batch(page_files, output_dir)
-
         return web.json_response({
             "files": page_files,
             "total": total,
@@ -880,9 +743,6 @@ def setup_output_routes(routes):
         total = len(files)
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
-
-        # Detect workflow/metadata presence for the current page only
-        await _detect_workflow_batch(page_files, output_dir)
 
         return web.json_response({
             "files": page_files,
