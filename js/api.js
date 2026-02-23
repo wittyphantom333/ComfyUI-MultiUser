@@ -68,10 +68,15 @@ export async function checkSetupStatus() {
 }
 
 /**
- * Get current user info.
+ * Get current user info.  Returns null when not authenticated.
  */
 export async function getCurrentUser() {
-  const res = await apiGet("/me");
-  if (!res.ok) return null;
-  return res.json();
+  try {
+    const res = await apiGet("/me");
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    // apiGet throws on 401 — that's fine, just means not logged in
+    return null;
+  }
 }

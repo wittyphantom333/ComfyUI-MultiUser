@@ -12,6 +12,9 @@ import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
 import { createUserMenu } from "./user-menu.js";
 import { openAdminPanel } from "./admin-panel.js";
 
+// Shared auth state — set during init(), read during setup()
+let _authenticated = false;
+
 app.registerExtension({
   name: "comfyui.multiuser",
 
@@ -20,21 +23,18 @@ app.registerExtension({
    * We check auth state here and show login if needed.
    */
   async init() {
-    // Check if user is authenticated
-    let user = null;
-    try {
-      user = await getCurrentUser();
-    } catch (e) {
-      // Not authenticated
-    }
+    const user = await getCurrentUser();
 
     if (!user) {
-      // Show login overlay — blocks access to ComfyUI
-      await showAuthOverlay();
+      _authenticated = false;
+      // Show login overlay — the overlay calls location.reload()
+      // on successful login, so we'll re-enter init() authenticated.
+      showAuthOverlay();
       return;
     }
 
     // User is authenticated — load their permissions
+    _authenticated = true;
     window.__multiuser_current_user = user;
     await loadPermissions();
   },
@@ -44,6 +44,8 @@ app.registerExtension({
    * We filter out nodes the user doesn't have permission to use.
    */
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (!_authenticated) return; // not logged in yet — skip filtering
+
     const className = nodeData.name || nodeType.comfyClass;
     if (!className) return;
 
@@ -59,6 +61,10 @@ app.registerExtension({
    * We add the user menu and bind event listeners.
    */
   async setup() {
+    // Skip entirely when not authenticated — the login overlay is showing
+    // and will reload the page once the user logs in.
+    if (!_authenticated) return;
+
     // Create user menu in top-right
     await createUserMenu();
 
