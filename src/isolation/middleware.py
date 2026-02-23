@@ -98,14 +98,18 @@ async def _rewrite_prompt_outputs(
     request: web.Request, handler, user: dict
 ) -> web.Response:
     """Prefix SaveImage / PreviewImage output with the user's username."""
+    logger.info("Isolation: _rewrite_prompt_outputs called for user %s", user.get("username"))
+
     body = await request.read()
     try:
         data = json_mod.loads(body)
     except (json_mod.JSONDecodeError, Exception):
+        logger.warning("Isolation: failed to parse prompt JSON body (%d bytes)", len(body))
         return await handler(request)
 
     prompt = data.get("prompt")
     if not prompt or not isinstance(prompt, dict):
+        logger.warning("Isolation: no 'prompt' key in body. Keys: %s", list(data.keys()))
         return await handler(request)
 
     username = user["username"]
@@ -120,46 +124,68 @@ async def _rewrite_prompt_outputs(
             continue
 
         # Match ANY node that writes files via filename_prefix.
-        # This catches standard SaveImage, PreviewImage, plus all custom
-        # / third-party save nodes (SaveImageExtended, WAS_Save_Image, etc.)
-        # that follow ComfyUI's filename_prefix convention.
         if "filename_prefix" in inputs:
             prefix = inputs.get("filename_prefix", "ComfyUI")
             if isinstance(prefix, str) and not prefix.startswith(f"{username}/"):
                 inputs["filename_prefix"] = f"{username}/{prefix}"
                 modified = True
-                logger.debug(
-                    "Isolation: rewrote %s.filename_prefix -> %s for user %s",
-                    class_type, inputs["filename_prefix"], username,
+                logger.info(
+                    "Isolation: rewrote node %s (%s) filename_prefix -> '%s' for user %s",
+                    _node_id, class_type, inputs["filename_prefix"], username,
                 )
+
+    if not modified:
+        logger.info("Isolation: no filename_prefix inputs found to rewrite for user %s", username)
+        # Log all node class_types to help debug
+        node_types = [
+            n.get("class_type", "?") for n in prompt.values() if isinstance(n, dict)
+        ]
+        logger.info("Isolation: node types in prompt: %s", node_types)
 
     if modified:
         new_body = json_mod.dumps(data).encode()
 
-        # Patch the cached body so downstream middleware and ComfyUI's handler
-        # all see the rewritten prompt regardless of which aiohttp read path
-        # they use (request.read(), request.json(), request.content.read()).
+        # ── Patch raw bytes cache (used by request.read()) ──
         request._read_bytes = new_body
 
-        # Also replace the raw payload stream so request.content.read() works
-        # in all aiohttp versions (3.x+).
+        # ── Patch request.json() directly ──
+        # This is the MOST reliable approach.  ComfyUI's /prompt handler
+        # calls `await request.json()`.  By replacing the method on this
+        # instance we guarantee it returns the modified data regardless
+        # of how the underlying aiohttp version handles body caching.
+        _modified_data = data  # capture for closure
+
+        async def _patched_json(
+            self=None, *, loads=json_mod.loads, content_type=None
+        ):
+            return _modified_data
+
+        request.json = _patched_json
+
+        # ── Also replace the raw payload stream (belt-and-suspenders) ──
         try:
-            from aiohttp.streams import EMPTY_PAYLOAD, StreamReader
+            from aiohttp.streams import StreamReader
             try:
                 payload = StreamReader(request.protocol, 2**16,
                                        loop=asyncio.get_event_loop())
             except TypeError:
-                # aiohttp >= 3.9 dropped the loop parameter
                 payload = StreamReader(request.protocol, 2**16)
             payload.feed_data(new_body)
             payload.feed_eof()
             request._payload = payload
-        except Exception:
-            pass  # _read_bytes patch is sufficient in most cases
+        except Exception as exc:
+            logger.debug("Isolation: StreamReader patch skipped: %s", exc)
 
         logger.info(
             "Isolation: rewrote prompt for user %s (%d bytes -> %d bytes)",
             username, len(body), len(new_body),
+        )
+
+        # Verify the patch took effect
+        verify = await request.read()
+        logger.info(
+            "Isolation: verify — request.read() returns modified=%s (len=%d)",
+            verify == new_body, len(verify),
         )
 
     return await handler(request)
