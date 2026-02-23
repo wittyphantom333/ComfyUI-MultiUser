@@ -75,6 +75,7 @@ async def _get_user_from_jwt(token: str) -> Optional[dict]:
     """Validate JWT and return user info."""
     payload = verify_jwt(token)
     if payload is None:
+        logger.debug("JWT decode returned None (expired or invalid)")
         return None
 
     db = await get_db()
@@ -82,7 +83,11 @@ async def _get_user_from_jwt(token: str) -> Optional[dict]:
         "SELECT id, username, is_admin, is_active FROM users WHERE id = ?",
         (payload["sub"],)
     )
-    if user is None or not user["is_active"]:
+    if user is None:
+        logger.warning("JWT valid for user_id=%s but user not found in DB", payload["sub"])
+        return None
+    if not user["is_active"]:
+        logger.warning("JWT valid for user '%s' but account is disabled", user["username"])
         return None
     return user
 
@@ -168,10 +173,14 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
         token = auth_header[7:]
         if token.startswith("cmu_"):
             user = await _get_user_from_api_token(token)
+            if user is None:
+                logger.debug("API token verification failed for %s (prefix=%s)",
+                            request.path, token[:12])
         else:
             user = await _get_user_from_jwt(token)
             if user is None:
-                logger.debug("Bearer JWT verification failed for %s", request.path)
+                logger.warning("Bearer JWT verification failed for %s %s (token_len=%d, prefix=%s)",
+                             request.method, request.path, len(token), token[:20])
 
     # 2. Session cookie
     if user is None:
@@ -180,6 +189,11 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
             user = await _get_user_from_jwt(cookie_token)
             if user is None:
                 logger.debug("Cookie JWT verification failed for %s", request.path)
+        elif auth_header:
+            logger.debug("No session cookie for %s (had auth header but it failed)", request.path)
+
+    if user is None and (auth_header or request.cookies.get("multiuser_session")):
+        logger.debug("All auth methods failed for %s %s", request.method, request.path)
 
     return user
 

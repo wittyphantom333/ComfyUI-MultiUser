@@ -249,6 +249,7 @@ async function handleSubmit(e, isSetup) {
 
     // ─── Success ───
     console.log("[MultiUser] Auth succeeded, token present:", !!data.token);
+    console.log("[MultiUser] Auth response user:", JSON.stringify(data.user));
 
     // 1. Store token for Bearer-header auth
     if (data.token) {
@@ -256,42 +257,24 @@ async function handleSubmit(e, isSetup) {
       console.log("[MultiUser] Token stored, length:", data.token.length);
     }
 
-    // 2. Verify the token actually works by hitting /me directly
-    //    (bypass apiGet to avoid its clearToken-on-401 side-effect)
-    let verifyUser = null;
-    try {
-      const verifyRes = await fetch("/multiuser/me", {
-        credentials: "include",
-        headers: {
-          "Accept": "application/json",
-          "Authorization": `Bearer ${data.token}`,
-        },
-      });
-      console.log("[MultiUser] Verify /me status:", verifyRes.status);
-      if (verifyRes.ok) {
-        verifyUser = await verifyRes.json();
-      }
-    } catch (verifyErr) {
-      console.error("[MultiUser] Verify /me fetch error:", verifyErr);
-    }
-    console.log("[MultiUser] Token verification result:", verifyUser);
-
-    if (!verifyUser) {
-      // Token didn't survive the round-trip — something is very wrong
-      console.error("[MultiUser] Token verification failed! Token stored but /me still returns 401");
-      showError("Login succeeded but session could not be established. Check server logs.");
+    // 2. Use the user object from the response directly.
+    //    (Avoids a /me round-trip that can fail behind reverse proxies.)
+    const user = data.user;
+    if (!user || !user.username) {
+      console.error("[MultiUser] Response missing user object:", data);
+      showError("Login succeeded but server returned incomplete data.");
       btn.disabled = false;
       btn.textContent = "Try Again";
       return;
     }
 
     // 3. Store user globally and resolve the auth promise
-    window.__multiuser_current_user = verifyUser;
+    window.__multiuser_current_user = user;
     hideAuthOverlay();
-    console.log("[MultiUser] Auth complete, resolving promise for:", verifyUser.username);
+    console.log("[MultiUser] Auth complete, resolving promise for:", user.username);
 
     if (_authResolve) {
-      _authResolve(verifyUser);
+      _authResolve(user);
       _authResolve = null;
     }
   } catch (err) {
