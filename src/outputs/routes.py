@@ -187,8 +187,11 @@ def _has_generation_data(path: Path) -> bool:
             img = Image.open(path)
             prompt_text = (img.info or {}).get("prompt", "")
             if not prompt_text:
+                logger.debug("[badge] %s: PNG no prompt chunk → False", path.name)
                 return False
-            return _prompt_has_sampler(prompt_text)
+            result = _prompt_has_sampler(prompt_text)
+            logger.debug("[badge] %s: PNG prompt len=%d → %s", path.name, len(prompt_text), result)
+            return result
 
         if ext in VIDEO_EXTS:
             # VHS sidecar PNG
@@ -223,29 +226,30 @@ def _has_generation_data(path: Path) -> bool:
 
 
 async def _detect_workflow_batch(files: list[dict], output_dir: Path) -> None:
-    """Batch-detect workflow/metadata presence for a list of _file_info dicts.
-
-    Two-pass approach:
-    1. Check the generations table for files with workflow_json.
-    2. For remaining files, do a quick per-file binary check.
-    """
+    """Batch-detect workflow/metadata presence for a list of _file_info dicts."""
     if not files:
         return
 
-    # The generations DB stores workflow_json for ALL tracked prompts
-    # (when store_prompts is enabled), so it can't distinguish files with
-    # real embedded metadata from those without.  Skip the DB pass entirely
-    # and rely on the per-file binary check which is accurate.
-
+    detected = 0
+    skipped = 0
     for f in files:
         if f["has_meta"]:
+            skipped += 1
             continue
         try:
             full = output_dir / f["relative_path"]
             if full.exists():
-                f["has_meta"] = _has_generation_data(full)
-        except Exception:
-            pass
+                result = _has_generation_data(full)
+                f["has_meta"] = result
+                if result:
+                    detected += 1
+        except Exception as exc:
+            logger.debug("detect_workflow error for %s: %s", f.get("filename"), exc)
+
+    logger.info(
+        "[badge-detect] %d files: %d with gen-data, %d without, %d pre-set  (PIL=%s)",
+        len(files), detected, len(files) - detected - skipped, skipped, _HAS_PIL,
+    )
 
 
 def _generate_image_thumbnail(src: Path, dst: Path, size: int) -> bool:
