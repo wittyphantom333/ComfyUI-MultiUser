@@ -307,6 +307,10 @@ def setup_output_routes(routes):
 
         # ── Collect files with STRICT scoping ──
         files: list[dict] = []
+        logger.debug(
+            "list_outputs: user=%s is_admin=%s output_dir=%s",
+            username, is_admin, output_dir,
+        )
 
         if is_admin:
             if user_filter:
@@ -327,10 +331,17 @@ def setup_output_routes(routes):
                     if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
                         files.append(_file_info(entry, output_dir))
 
-            # Root-level (non-recursive) shared/legacy files only
+            # Root-level (non-recursive) shared/legacy files only.
+            # Cross-check with generations table: if a root-level file can be
+            # attributed to a different user's generation, skip it.
             for entry in output_dir.iterdir():
                 if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
                     files.append(_file_info(entry, output_dir))
+
+        logger.debug(
+            "list_outputs: user=%s found %d files before filters",
+            username, len(files),
+        )
 
         # Apply search filter
         if search:

@@ -1,1004 +1,816 @@
 /**
  * ComfyUI-MultiUser — Output Gallery
  *
- * Per-user-scoped output browser with:
- *   - Thumbnail grid (images + video first-frame previews)
- *   - Tagging system with autocomplete
- *   - 0–5 star rating system
- *   - Metadata viewer (PNG workflow, EXIF, video info)
- *   - Lightbox with keyboard navigation
- *   - Admin user filter
+ * Native-looking output browser that matches ComfyUI's dark theme.
+ * Features: thumbnail grid, right-click context menu, star ratings,
+ * tagging, metadata viewer, lightbox, keyboard navigation.
  */
 
-import { apiGet, apiPost, apiPut, apiDelete, authHeaders } from "./api.js";
+import { apiGet, apiPost, apiPut, apiDelete } from "./api.js";
 
-// ─── CSS ─────────────────────────────────────────────────────────────
-const GALLERY_CSS = `
-  /* Container */
-  .mu-gallery {
-    padding: 10px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #e0e0e0;
-    font-size: 13px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-  }
+/* ────────────────────────────────────────────────────────────────────
+   CSS — uses ComfyUI's CSS custom-properties with safe fallbacks
+   so the gallery adapts to custom themes automatically.
+   ──────────────────────────────────────────────────────────────────── */
+const CSS = `
+/* === Container === */
+.mu-gallery{
+  padding:8px; height:100%; display:flex; flex-direction:column;
+  color:var(--fg-color,#ddd); font-size:12px; font-family:Arial,sans-serif;
+}
 
-  /* ── Toolbar ────────────────────────── */
-  .mu-gallery-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 8px;
-    align-items: center;
-  }
-  .mu-gallery-toolbar input[type="text"],
-  .mu-gallery-toolbar select {
-    padding: 5px 8px;
-    border: 1px solid #444;
-    border-radius: 5px;
-    background: #1a1a2e;
-    color: #e0e0e0;
-    font-size: 12px;
-    outline: none;
-  }
-  .mu-gallery-toolbar input[type="text"] {
-    flex: 1;
-    min-width: 80px;
-  }
-  .mu-gallery-toolbar input[type="text"]:focus,
-  .mu-gallery-toolbar select:focus {
-    border-color: #7c6cff;
-  }
-  .mu-gallery-toolbar select { cursor: pointer; }
+/* === Toolbar === */
+.mu-toolbar{
+  display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; align-items:center;
+}
+.mu-toolbar input,.mu-toolbar select{
+  padding:4px 6px; border:1px solid var(--border-color,#4e4e4e); border-radius:4px;
+  background:var(--comfy-input-bg,#222); color:var(--input-text,var(--fg-color,#ddd));
+  font-size:11px; outline:none;
+}
+.mu-toolbar input:focus,.mu-toolbar select:focus{border-color:#888}
+.mu-toolbar input[type="text"]{flex:1;min-width:60px}
+.mu-toolbar select{cursor:pointer}
+.mu-toolbar-btn{
+  padding:4px 8px; border:1px solid var(--border-color,#4e4e4e); border-radius:4px;
+  background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd);
+  cursor:pointer; font-size:11px; display:flex; align-items:center; gap:3px;
+}
+.mu-toolbar-btn:hover{background:#333}
 
-  /* Filter row (second row) */
-  .mu-gallery-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 8px;
-    align-items: center;
-    font-size: 12px;
-  }
-  .mu-filter-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    background: #1f2a3d;
-    color: #6bb5ff;
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .mu-filter-tag:hover { background: #2a3a52; }
-  .mu-filter-tag.active { background: #7c6cff; color: #fff; }
-  .mu-filter-stars {
-    display: inline-flex;
-    gap: 1px;
-    cursor: pointer;
-    font-size: 14px;
-  }
-  .mu-filter-stars span { color: #555; transition: color 0.1s; }
-  .mu-filter-stars span.on { color: #ffc107; }
-  .mu-filter-stars span:hover { color: #ffdb4d; }
+/* === Filters row === */
+.mu-filters{
+  display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; align-items:center;
+}
+.mu-filt-stars{display:inline-flex;gap:1px;cursor:pointer;font-size:13px;user-select:none}
+.mu-filt-stars span{color:#555;transition:color .1s}
+.mu-filt-stars span.on{color:#e8a317}
+.mu-filt-tag{
+  display:inline-block; padding:1px 6px; background:#293742; color:#5ba3d9;
+  border-radius:3px; font-size:10px; cursor:pointer; border:1px solid transparent;
+}
+.mu-filt-tag:hover{border-color:#5ba3d9}
+.mu-filt-tag.active{background:#236692;color:#fff}
 
-  /* ── Grid ───────────────────────────── */
-  .mu-gallery-grid {
-    flex: 1;
-    overflow-y: auto;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: 6px;
-    align-content: start;
-  }
-  .mu-gallery-item {
-    position: relative;
-    aspect-ratio: 1;
-    border-radius: 6px;
-    overflow: hidden;
-    cursor: pointer;
-    background: #1a1a2e;
-    border: 2px solid transparent;
-    transition: border-color 0.15s, transform 0.1s;
-  }
-  .mu-gallery-item:hover {
-    border-color: #7c6cff;
-    transform: scale(1.02);
-  }
-  .mu-gallery-item img {
-    width: 100%; height: 100%;
-    object-fit: cover; display: block;
-  }
-  .mu-gallery-item .mu-item-overlay {
-    position: absolute; bottom: 0; left: 0; right: 0;
-    padding: 3px 5px;
-    background: rgba(0,0,0,0.75);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-  .mu-gallery-item:hover .mu-item-overlay { opacity: 1; }
-  .mu-item-name {
-    font-size: 10px; color: #ccc;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    flex: 1; min-width: 0;
-  }
-  .mu-item-stars {
-    font-size: 9px; color: #ffc107;
-    flex-shrink: 0; margin-left: 4px;
-  }
-  .mu-gallery-item .mu-item-badge {
-    position: absolute; top: 4px; right: 4px;
-    background: rgba(0,0,0,0.7);
-    border-radius: 3px;
-    padding: 1px 5px;
-    font-size: 9px; font-weight: 600;
-  }
-  .mu-item-badge-video { color: #ffb86c; }
-  .mu-item-badge-tags {
-    position: absolute; top: 4px; left: 4px;
-    background: rgba(0,0,0,0.7);
-    border-radius: 3px; padding: 1px 5px;
-    font-size: 9px; color: #6bb5ff;
-  }
+/* === Grid === */
+.mu-grid{
+  flex:1; overflow-y:auto; display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
+  gap:4px; align-content:start;
+}
+.mu-item{
+  position:relative; aspect-ratio:1; border-radius:4px; overflow:hidden;
+  cursor:pointer; background:var(--comfy-input-bg,#222);
+  border:1px solid transparent; transition:border-color .15s;
+}
+.mu-item:hover{border-color:var(--border-color,#4e4e4e)}
+.mu-item.selected{border-color:#236692}
+.mu-item img{width:100%;height:100%;object-fit:cover;display:block}
 
-  /* ── Pagination ─────────────────────── */
-  .mu-gallery-pagination {
-    display: flex; align-items: center; justify-content: center;
-    gap: 8px; padding: 8px 0 4px; font-size: 12px; flex-shrink: 0;
-  }
-  .mu-gallery-pagination button {
-    padding: 4px 10px;
-    border: 1px solid #444; border-radius: 5px;
-    background: #1a1a2e; color: #ccc;
-    cursor: pointer; font-size: 12px;
-  }
-  .mu-gallery-pagination button:hover:not(:disabled) { background: #2a2a3e; color: #fff; }
-  .mu-gallery-pagination button:disabled { opacity: 0.4; cursor: default; }
+/* Hover overlay (gradient at bottom) */
+.mu-item .mu-ov{
+  position:absolute;bottom:0;left:0;right:0;
+  padding:14px 4px 3px;
+  background:linear-gradient(transparent,rgba(0,0,0,.85));
+  opacity:0;transition:opacity .15s;
+  display:flex;justify-content:space-between;align-items:flex-end;
+}
+.mu-item:hover .mu-ov{opacity:1}
+.mu-ov-name{
+  font-size:9px;color:#ccc;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;flex:1;min-width:0;
+}
 
-  /* ── Empty ──────────────────────────── */
-  .mu-gallery-empty {
-    text-align: center; color: #666; padding: 40px 12px; font-size: 13px;
-  }
-  .mu-gallery-empty .mu-empty-icon { font-size: 36px; margin-bottom: 10px; }
-  .mu-gallery-loading { text-align: center; padding: 24px; color: #888; font-size: 12px; }
+/* Stars always visible on rated items */
+.mu-item-stars{
+  position:absolute;bottom:2px;right:3px;font-size:10px;
+  text-shadow:0 1px 3px rgba(0,0,0,.9);pointer-events:none;
+  letter-spacing:1px; color:#e8a317;
+}
 
-  /* ── Lightbox ───────────────────────── */
-  .mu-lightbox-overlay {
-    position: fixed; inset: 0; z-index: 99999;
-    background: rgba(0,0,0,0.92);
-    display: flex; align-items: center; justify-content: center;
-    cursor: zoom-out;
-  }
-  .mu-lightbox-overlay img,
-  .mu-lightbox-overlay video {
-    max-width: 90vw; max-height: 80vh;
-    object-fit: contain; border-radius: 4px;
-    box-shadow: 0 4px 32px rgba(0,0,0,0.6);
-  }
+/* Badges */
+.mu-badge{
+  position:absolute;background:rgba(0,0,0,.65);border-radius:2px;
+  padding:1px 4px;font-size:8px;font-weight:700;
+}
+.mu-badge-vid{top:3px;right:3px;color:#ffb86c}
+.mu-badge-tag{top:3px;left:3px;color:#5ba3d9}
 
-  /* Lightbox top bar */
-  .mu-lightbox-topbar {
-    position: fixed; top: 0; left: 0; right: 0;
-    z-index: 100001;
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 10px 16px;
-    background: rgba(0,0,0,0.6);
-  }
-  .mu-lightbox-topbar-left { display: flex; align-items: center; gap: 12px; }
-  .mu-lightbox-topbar-right { display: flex; gap: 8px; }
-  .mu-lightbox-topbar button {
-    padding: 6px 12px; border: none; border-radius: 5px;
-    font-size: 12px; font-weight: 600; cursor: pointer;
-    transition: background 0.15s;
-  }
-  .mu-lb-btn-download { background: #2e7d32; color: #fff; }
-  .mu-lb-btn-download:hover { background: #388e3c; }
-  .mu-lb-btn-delete { background: #d32f2f; color: #fff; }
-  .mu-lb-btn-delete:hover { background: #e53935; }
-  .mu-lb-btn-info { background: #1565c0; color: #fff; }
-  .mu-lb-btn-info:hover { background: #1976d2; }
-  .mu-lb-btn-close { background: #444; color: #fff; }
-  .mu-lb-btn-close:hover { background: #666; }
+/* === Context menu === */
+.mu-ctx{
+  position:fixed;z-index:100000;min-width:180px;
+  background:var(--comfy-menu-bg,#353535);
+  border:1px solid var(--border-color,#4e4e4e);
+  border-radius:4px;padding:4px 0;
+  box-shadow:0 4px 16px rgba(0,0,0,.5);font-size:12px;
+}
+.mu-ctx-item{
+  padding:5px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;
+  color:var(--fg-color,#ddd);
+}
+.mu-ctx-item:hover{background:#236692;color:#fff}
+.mu-ctx-sep{height:1px;background:var(--border-color,#4e4e4e);margin:3px 8px}
+.mu-ctx-stars{
+  display:flex;gap:3px;padding:5px 14px;align-items:center;
+}
+.mu-ctx-stars-label{font-size:11px;color:#999;margin-right:4px}
+.mu-ctx-stars span{font-size:16px;color:#555;cursor:pointer;transition:color .1s}
+.mu-ctx-stars span.on{color:#e8a317}
+.mu-ctx-stars span:hover{color:#f0c040}
+.mu-ctx-item.danger{color:#ef5350}
+.mu-ctx-item.danger:hover{background:#c62828;color:#fff}
 
-  /* Lightbox bottom panel */
-  .mu-lightbox-bottom {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    z-index: 100001;
-    background: rgba(0,0,0,0.75);
-    padding: 10px 16px;
-    display: flex; flex-direction: column; gap: 8px;
-    max-height: 40vh; overflow-y: auto;
-  }
-  .mu-lb-file-info {
-    font-size: 12px; color: #aaa;
-    display: flex; flex-wrap: wrap; gap: 16px;
-  }
-  .mu-lb-file-info span { white-space: nowrap; }
+/* === Pagination === */
+.mu-pag{
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:6px 0 2px;font-size:11px;flex-shrink:0;color:var(--descrip-text,#999);
+}
+.mu-pag button{
+  padding:3px 8px;border:1px solid var(--border-color,#4e4e4e);border-radius:3px;
+  background:var(--comfy-input-bg,#222);color:var(--fg-color,#ddd);
+  cursor:pointer;font-size:11px;
+}
+.mu-pag button:hover:not(:disabled){background:#333}
+.mu-pag button:disabled{opacity:.3;cursor:default}
 
-  /* Rating in lightbox */
-  .mu-lb-rating {
-    display: flex; align-items: center; gap: 6px;
-  }
-  .mu-lb-rating-label { font-size: 12px; color: #888; }
-  .mu-lb-stars {
-    display: inline-flex; gap: 2px; cursor: pointer; font-size: 20px;
-  }
-  .mu-lb-stars span { color: #555; transition: color 0.1s; user-select: none; }
-  .mu-lb-stars span.on { color: #ffc107; }
-  .mu-lb-stars span:hover { color: #ffdb4d; }
+/* === Empty / loading === */
+.mu-empty{text-align:center;color:var(--descrip-text,#999);padding:30px 10px;font-size:12px}
+.mu-loading{text-align:center;padding:20px;color:var(--descrip-text,#999);font-size:11px}
 
-  /* Tags in lightbox */
-  .mu-lb-tags {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  }
-  .mu-lb-tags-label { font-size: 12px; color: #888; }
-  .mu-lb-tag {
-    display: inline-flex; align-items: center; gap: 3px;
-    background: #1f2a3d; color: #6bb5ff;
-    padding: 2px 8px; border-radius: 3px; font-size: 11px;
-  }
-  .mu-lb-tag-remove {
-    background: none; border: none; color: #ff6b6b;
-    cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1;
-  }
-  .mu-lb-tag-remove:hover { color: #ff4444; }
-  .mu-lb-tag-input {
-    padding: 3px 6px; border: 1px solid #444; border-radius: 3px;
-    background: #1a1a2e; color: #e0e0e0; font-size: 11px;
-    outline: none; width: 90px;
-  }
-  .mu-lb-tag-input:focus { border-color: #7c6cff; }
+/* === Lightbox === */
+.mu-lb{
+  position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.92);
+  display:flex;flex-direction:column;
+}
+.mu-lb-top{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:8px 12px;background:rgba(0,0,0,.6);flex-shrink:0;
+}
+.mu-lb-top-left{
+  font-size:12px;font-weight:600;color:#ddd;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;
+}
+.mu-lb-top-right{display:flex;gap:6px;flex-shrink:0}
+.mu-lb-top button{
+  padding:4px 10px;border:none;border-radius:3px;font-size:11px;font-weight:600;
+  cursor:pointer;color:#ddd;background:#444;
+}
+.mu-lb-top button:hover{background:#555}
+.mu-lb-btn-dl{background:#2e7d32;color:#fff}
+.mu-lb-btn-dl:hover{background:#388e3c}
+.mu-lb-btn-del{background:#c62828;color:#fff}
+.mu-lb-btn-del:hover{background:#d32f2f}
 
-  /* Metadata panel */
-  .mu-metadata-panel {
-    position: fixed; right: 0; top: 0; bottom: 0;
-    width: 380px; max-width: 90vw;
-    z-index: 100002;
-    background: #1a1a2e; color: #e0e0e0;
-    overflow-y: auto;
-    border-left: 1px solid #333;
-    padding: 16px;
-    font-size: 12px;
-    box-shadow: -4px 0 16px rgba(0,0,0,0.4);
-  }
-  .mu-metadata-panel h3 {
-    margin: 0 0 12px; font-size: 14px; color: #fff;
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .mu-metadata-panel .mu-meta-close {
-    background: none; border: none; color: #888; cursor: pointer;
-    font-size: 18px; padding: 2px 6px;
-  }
-  .mu-metadata-panel .mu-meta-close:hover { color: #fff; }
-  .mu-metadata-section {
-    margin-bottom: 16px;
-  }
-  .mu-metadata-section h4 {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.5px; color: #888; margin: 0 0 8px;
-  }
-  .mu-meta-table {
-    width: 100%; border-collapse: collapse;
-  }
-  .mu-meta-table td {
-    padding: 3px 6px; border-bottom: 1px solid #222; vertical-align: top;
-  }
-  .mu-meta-table td:first-child {
-    color: #888; white-space: nowrap; width: 100px;
-  }
-  .mu-meta-table td:last-child {
-    word-break: break-all;
-  }
-  .mu-meta-json {
-    background: #111; border-radius: 4px; padding: 8px;
-    max-height: 200px; overflow: auto;
-    font-family: monospace; font-size: 11px; color: #aaa;
-    white-space: pre-wrap; word-break: break-all;
-  }
-  .mu-meta-json-toggle {
-    background: none; border: 1px solid #444; border-radius: 3px;
-    color: #6bb5ff; cursor: pointer; padding: 2px 8px; font-size: 11px;
-    margin-top: 4px;
-  }
-  .mu-meta-json-toggle:hover { background: #222; }
+/* Content area */
+.mu-lb-body{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;position:relative;cursor:zoom-out;
+}
+.mu-lb-body img,.mu-lb-body video{max-width:95%;max-height:100%;object-fit:contain}
 
-  /* Nav arrows in lightbox */
-  .mu-lb-nav {
-    position: fixed; top: 50%; z-index: 100001;
-    transform: translateY(-50%);
-    background: rgba(0,0,0,0.5); border: none;
-    color: #fff; font-size: 24px; cursor: pointer;
-    padding: 12px 8px; border-radius: 4px;
-    transition: background 0.15s;
-  }
-  .mu-lb-nav:hover { background: rgba(0,0,0,0.8); }
-  .mu-lb-nav-prev { left: 8px; }
-  .mu-lb-nav-next { right: 8px; }
+/* Nav */
+.mu-lb-nav{
+  position:absolute;top:50%;transform:translateY(-50%);
+  background:rgba(0,0,0,.4);border:none;color:#ccc;font-size:20px;
+  cursor:pointer;padding:10px 6px;border-radius:3px;z-index:1;
+}
+.mu-lb-nav:hover{background:rgba(0,0,0,.7);color:#fff}
+.mu-lb-nav-prev{left:6px}
+.mu-lb-nav-next{right:6px}
+
+/* Bottom panel */
+.mu-lb-bottom{
+  background:rgba(0,0,0,.7);padding:8px 12px;display:flex;flex-direction:column;
+  gap:6px;max-height:35vh;overflow-y:auto;flex-shrink:0;
+}
+.mu-lb-info{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:#999}
+.mu-lb-rating{display:flex;align-items:center;gap:6px}
+.mu-lb-rating-lbl{font-size:11px;color:#999}
+.mu-lb-stars{display:inline-flex;gap:2px;cursor:pointer;font-size:18px}
+.mu-lb-stars span{color:#555;transition:color .1s;user-select:none}
+.mu-lb-stars span.on{color:#e8a317}
+.mu-lb-stars span:hover{color:#f0c040}
+.mu-lb-tags{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.mu-lb-tags-lbl{font-size:11px;color:#999}
+.mu-lb-tag{
+  display:inline-flex;align-items:center;gap:3px;
+  background:#293742;color:#5ba3d9;padding:1px 6px;border-radius:2px;font-size:10px;
+}
+.mu-lb-tag-rm{
+  background:none;border:none;color:#ef5350;cursor:pointer;font-size:11px;
+  padding:0 1px;line-height:1;
+}
+.mu-lb-tag-rm:hover{color:#ff1744}
+.mu-lb-tag-input{
+  padding:2px 5px;border:1px solid var(--border-color,#4e4e4e);border-radius:2px;
+  background:var(--comfy-input-bg,#222);color:var(--fg-color,#ddd);
+  font-size:10px;outline:none;width:80px;
+}
+.mu-lb-tag-input:focus{border-color:#888}
+
+/* === Metadata side-panel === */
+.mu-meta{
+  position:fixed;right:0;top:0;bottom:0;width:360px;max-width:90vw;z-index:100002;
+  background:var(--comfy-menu-bg,#353535);
+  border-left:1px solid var(--border-color,#4e4e4e);
+  overflow-y:auto;padding:12px;font-size:11px;color:var(--fg-color,#ddd);
+  box-shadow:-4px 0 12px rgba(0,0,0,.4);
+}
+.mu-meta h3{margin:0 0 10px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.mu-meta-close{background:none;border:none;color:#999;cursor:pointer;font-size:16px;padding:2px 4px}
+.mu-meta-close:hover{color:#fff}
+.mu-meta-sec{margin-bottom:12px}
+.mu-meta-sec h4{
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+  color:#888;margin:0 0 6px;border-bottom:1px solid #444;padding-bottom:3px;
+}
+.mu-meta-tbl{width:100%;border-collapse:collapse}
+.mu-meta-tbl td{padding:2px 4px;border-bottom:1px solid #333;vertical-align:top}
+.mu-meta-tbl td:first-child{color:#888;white-space:nowrap;width:80px}
+.mu-meta-tbl td:last-child{word-break:break-all}
+.mu-meta-json{
+  background:#1a1a1a;border-radius:3px;padding:6px;max-height:180px;overflow:auto;
+  font-family:monospace;font-size:10px;color:#aaa;white-space:pre-wrap;word-break:break-all;
+}
+.mu-meta-btn{
+  background:none;border:1px solid #4e4e4e;border-radius:2px;
+  color:#5ba3d9;cursor:pointer;padding:1px 6px;font-size:10px;margin-top:3px;
+}
+.mu-meta-btn:hover{background:#333}
 `;
 
-let _cssInjected = false;
-function _injectCss() {
-  if (_cssInjected) return;
-  _cssInjected = true;
+let _cssOk = false;
+function _css() {
+  if (_cssOk) return;
+  _cssOk = true;
   const s = document.createElement("style");
-  s.id = "mu-gallery-styles";
-  s.textContent = GALLERY_CSS;
+  s.textContent = CSS;
   document.head.appendChild(s);
 }
 
-// ─── State ───────────────────────────────────────────────────────────
+/* ────────────────────────────────────────────────────────────────────
+   State
+   ──────────────────────────────────────────────────────────────────── */
+let _el_ = null;      // root gallery element
 let _page = 1;
-const PER_PAGE = 50;
+const PER = 60;
 let _sort = "newest";
 let _search = "";
-let _typeFilter = "all";
-let _userFilter = "";
-let _tagFilter = "";
-let _minRating = 0;
-let _currentFiles = [];
-let _totalFiles = 0;
-let _totalPages = 0;
-let _isAdmin = false;
-let _galleryEl = null;
-let _searchTimer = null;
-let _allTags = [];       // user's tag palette
+let _type = "all";
+let _userF = "";       // admin user filter
+let _tagF = "";        // tag filter
+let _minR = 0;         // min rating
+let _files = [];
+let _total = 0;
+let _pages = 0;
+let _admin = false;
+let _tags = [];        // user's known tags
+let _debounce = null;
 
-// ─── Public entry ────────────────────────────────────────────────────
-
+/* ────────────────────────────────────────────────────────────────────
+   Public entry point (called by multiuser.js sidebar tab)
+   ──────────────────────────────────────────────────────────────────── */
 export function renderOutputGallery(el) {
-  _injectCss();
+  _css();
   el.innerHTML = "";
-
   const user = window.__multiuser_current_user;
   if (!user) {
-    el.innerHTML = `<div class="mu-gallery-empty"><div class="mu-empty-icon">🖼️</div><div>Sign in to view your outputs.</div></div>`;
+    el.innerHTML = '<div class="mu-empty">Sign in to view your outputs.</div>';
     return;
   }
+  _admin = !!user.is_admin;
+  _page = 1; _search = ""; _type = "all"; _userF = ""; _tagF = ""; _minR = 0;
 
-  _isAdmin = !!user.is_admin;
-  _page = 1;
-  _search = "";
-  _typeFilter = "all";
-  _userFilter = "";
-  _tagFilter = "";
-  _minRating = 0;
+  const root = _mk("div", "mu-gallery");
+  _el_ = root;
 
-  const container = document.createElement("div");
-  container.className = "mu-gallery";
-  _galleryEl = container;
+  /* toolbar */
+  const tb = _mk("div", "mu-toolbar");
+  const inp = _mk("input"); inp.type = "text"; inp.placeholder = "Search…";
+  inp.oninput = () => { clearTimeout(_debounce); _debounce = setTimeout(() => { _search = inp.value; _page = 1; _load(); }, 300); };
+  tb.appendChild(inp);
+  tb.appendChild(_sel([["newest","Newest"],["oldest","Oldest"],["name","Name"],["rating","Top Rated"]], _sort, v => { _sort = v; _page = 1; _load(); }));
+  tb.appendChild(_sel([["all","All Types"],["image","Images"],["video","Videos"]], _type, v => { _type = v; _page = 1; _load(); }));
+  if (_admin) { const us = _sel([["","All Users"]], "", v => { _userF = v; _page = 1; _load(); }); us.id = "mu-uf"; tb.appendChild(us); _loadUsers(us); }
+  const rbtn = _mk("button","mu-toolbar-btn"); rbtn.textContent = "↻"; rbtn.title = "Refresh";
+  rbtn.onclick = () => _load();
+  tb.appendChild(rbtn);
+  root.appendChild(tb);
 
-  // ── Toolbar row 1 ──
-  const toolbar = document.createElement("div");
-  toolbar.className = "mu-gallery-toolbar";
+  /* filters */
+  const filt = _mk("div","mu-filters"); filt.id = "mu-filt"; root.appendChild(filt);
 
-  const searchInput = _el("input", { type: "text", placeholder: "Search files…" });
-  searchInput.addEventListener("input", () => {
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(() => { _search = searchInput.value; _page = 1; _loadGallery(); }, 300);
-  });
-  toolbar.appendChild(searchInput);
+  /* grid */
+  const grid = _mk("div","mu-grid"); grid.id = "mu-grid"; root.appendChild(grid);
 
-  toolbar.appendChild(_select([
-    ["newest", "Newest"], ["oldest", "Oldest"], ["name", "Name"], ["rating", "Rating"]
-  ], _sort, v => { _sort = v; _page = 1; _loadGallery(); }));
+  /* pagination */
+  const pag = _mk("div","mu-pag"); pag.id = "mu-pag"; root.appendChild(pag);
 
-  toolbar.appendChild(_select([
-    ["all", "All"], ["image", "Images"], ["video", "Videos"]
-  ], _typeFilter, v => { _typeFilter = v; _page = 1; _loadGallery(); }));
-
-  if (_isAdmin) {
-    const userSel = _select([["", "All Users"]], "", v => { _userFilter = v; _page = 1; _loadGallery(); });
-    userSel.id = "mu-gallery-user-filter";
-    toolbar.appendChild(userSel);
-    _loadUserFilter(userSel);
-  }
-
-  container.appendChild(toolbar);
-
-  // ── Toolbar row 2: tag + rating filters ──
-  const filters = document.createElement("div");
-  filters.className = "mu-gallery-filters";
-  filters.id = "mu-gallery-filters";
-  container.appendChild(filters);
-
-  // Grid
-  const grid = document.createElement("div");
-  grid.className = "mu-gallery-grid";
-  grid.id = "mu-gallery-grid";
-  container.appendChild(grid);
-
-  // Pagination
-  const pag = document.createElement("div");
-  pag.className = "mu-gallery-pagination";
-  pag.id = "mu-gallery-pagination";
-  container.appendChild(pag);
-
-  el.appendChild(container);
-
-  // Load data
-  _loadTagPalette();
-  _loadGallery();
+  el.appendChild(root);
+  _loadTags();
+  _load();
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+/* ────────────────────────────────────────────────────────────────────
+   Helpers
+   ──────────────────────────────────────────────────────────────────── */
+function _mk(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
-function _el(tag, attrs = {}) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) e[k] = v;
-  return e;
+function _sel(opts, val, fn) {
+  const s = document.createElement("select");
+  s.innerHTML = opts.map(([v,l]) => `<option value="${v}">${l}</option>`).join("");
+  s.value = val;
+  s.onchange = () => fn(s.value);
+  return s;
 }
 
-function _select(options, value, onChange) {
-  const sel = document.createElement("select");
-  sel.innerHTML = options.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  sel.value = value;
-  sel.addEventListener("change", () => onChange(sel.value));
-  return sel;
-}
-
-function _viewUrl(file) {
-  const p = new URLSearchParams({ filename: file.filename, type: "output" });
-  if (file.subfolder) p.set("subfolder", file.subfolder);
+function _viewUrl(f) {
+  const p = new URLSearchParams({filename: f.filename, type: "output"});
+  if (f.subfolder) p.set("subfolder", f.subfolder);
   return `/view?${p}`;
 }
-
-function _thumbUrl(file) {
-  const p = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", size: "256" });
-  return `/multiuser/outputs/thumbnail?${p}`;
+function _thumbUrl(f) {
+  return `/multiuser/outputs/thumbnail?${new URLSearchParams({filename: f.filename, subfolder: f.subfolder||"", size:"256"})}`;
 }
+function _stars(n) { return Array.from({length:5},(_,i) => i < n ? "★" : "").join(""); }
+function _bytes(b) { return b < 1024 ? b+" B" : b < 1048576 ? (b/1024).toFixed(1)+" KB" : (b/1048576).toFixed(1)+" MB"; }
+function _date(ts) { return new Date(ts*1000).toLocaleString(); }
+function _esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
-function _starsHtml(rating, max = 5) {
-  return Array.from({ length: max }, (_, i) => i < rating ? "★" : "☆").join("");
-}
-
-function _formatBytes(b) {
-  if (b < 1024) return b + " B";
-  if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
-  return (b / 1048576).toFixed(1) + " MB";
-}
-
-function _formatDate(ts) {
-  return new Date(ts * 1000).toLocaleString();
-}
-
-// ─── Data fetching ───────────────────────────────────────────────────
-
-async function _loadGallery() {
-  const grid = _galleryEl?.querySelector("#mu-gallery-grid");
+/* ────────────────────────────────────────────────────────────────────
+   Data loading
+   ──────────────────────────────────────────────────────────────────── */
+async function _load() {
+  const grid = _el_?.querySelector("#mu-grid");
   if (!grid) return;
-  grid.innerHTML = '<div class="mu-gallery-loading">Loading…</div>';
-
+  grid.innerHTML = '<div class="mu-loading">Loading…</div>';
   try {
-    const p = new URLSearchParams({ page: _page, per_page: PER_PAGE, sort: _sort });
-    if (_search) p.set("search", _search);
-    if (_typeFilter !== "all") p.set("type", _typeFilter);
-    if (_userFilter) p.set("user", _userFilter);
-    if (_tagFilter) p.set("tag", _tagFilter);
-    if (_minRating > 0) p.set("min_rating", _minRating);
-
-    const res = await apiGet(`/outputs?${p}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      grid.innerHTML = `<div class="mu-gallery-empty"><div class="mu-empty-icon">⚠️</div><div>${err.error || "Failed to load"}</div></div>`;
-      return;
-    }
-    const data = await res.json();
-    _currentFiles = data.files || [];
-    _totalFiles = data.total || 0;
-    _totalPages = data.pages || 0;
+    const p = new URLSearchParams({page:_page, per_page:PER, sort:_sort});
+    if (_search) p.set("search",_search);
+    if (_type !== "all") p.set("type",_type);
+    if (_userF) p.set("user",_userF);
+    if (_tagF) p.set("tag",_tagF);
+    if (_minR > 0) p.set("min_rating",_minR);
+    const r = await apiGet(`/outputs?${p}`);
+    if (!r.ok) { const e = await r.json().catch(()=>({})); grid.innerHTML = `<div class="mu-empty">${e.error||"Failed to load"}</div>`; return; }
+    const d = await r.json();
+    _files = d.files||[]; _total = d.total||0; _pages = d.pages||0;
     _renderGrid(grid);
-    _renderPagination();
-  } catch (e) {
-    grid.innerHTML = `<div class="mu-gallery-empty"><div class="mu-empty-icon">⚠️</div><div>${e.message}</div></div>`;
-  }
+    _renderPag();
+  } catch(e) { grid.innerHTML = `<div class="mu-empty">${e.message}</div>`; }
 }
 
-async function _loadUserFilter(sel) {
+async function _loadUsers(sel) {
   try {
-    const res = await apiGet("/outputs/users");
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const u of data.users || []) {
-      const opt = document.createElement("option");
-      opt.value = u.username === "(shared)" ? "" : u.username;
-      opt.textContent = `${u.username} (${u.file_count})`;
-      sel.appendChild(opt);
+    const r = await apiGet("/outputs/users");
+    if (!r.ok) return;
+    const d = await r.json();
+    for (const u of (d.users||[])) {
+      const o = document.createElement("option");
+      o.value = u.username === "(shared)" ? "" : u.username;
+      o.textContent = `${u.username} (${u.file_count})`;
+      sel.appendChild(o);
     }
   } catch {}
 }
 
-async function _loadTagPalette() {
-  try {
-    const res = await apiGet("/outputs/tags");
-    if (res.ok) {
-      const data = await res.json();
-      _allTags = data.tags || [];
-    }
-  } catch {}
-  _renderFilterRow();
+async function _loadTags() {
+  try { const r = await apiGet("/outputs/tags"); if (r.ok) { _tags = (await r.json()).tags||[]; } } catch {}
+  _renderFilters();
 }
 
-// ─── Filter row ──────────────────────────────────────────────────────
-
-function _renderFilterRow() {
-  const filters = _galleryEl?.querySelector("#mu-gallery-filters");
-  if (!filters) return;
-  filters.innerHTML = "";
-
-  // Rating filter
-  const ratingDiv = document.createElement("div");
-  ratingDiv.className = "mu-filter-stars";
-  ratingDiv.title = "Min rating filter (click to toggle)";
+/* ────────────────────────────────────────────────────────────────────
+   Filter bar (rating stars + tag chips)
+   ──────────────────────────────────────────────────────────────────── */
+function _renderFilters() {
+  const el = _el_?.querySelector("#mu-filt");
+  if (!el) return;
+  el.innerHTML = "";
+  // stars
+  const sd = _mk("div","mu-filt-stars"); sd.title = "Min rating filter";
   for (let i = 1; i <= 5; i++) {
-    const star = document.createElement("span");
-    star.textContent = "★";
-    star.className = i <= _minRating ? "on" : "";
-    star.addEventListener("click", () => {
-      _minRating = _minRating === i ? 0 : i;
-      _page = 1;
-      _loadGallery();
-      _renderFilterRow();
-    });
-    ratingDiv.appendChild(star);
+    const s = _mk("span"); s.textContent = "★"; s.className = i <= _minR ? "on" : "";
+    s.onclick = () => { _minR = _minR === i ? 0 : i; _page = 1; _load(); _renderFilters(); };
+    sd.appendChild(s);
   }
-  filters.appendChild(ratingDiv);
-
-  // Tag chips
-  if (_allTags.length > 0) {
-    for (const tag of _allTags.slice(0, 20)) {
-      const chip = document.createElement("span");
-      chip.className = "mu-filter-tag" + (_tagFilter === tag ? " active" : "");
-      chip.textContent = tag;
-      chip.addEventListener("click", () => {
-        _tagFilter = _tagFilter === tag ? "" : tag;
-        _page = 1;
-        _loadGallery();
-        _renderFilterRow();
-      });
-      filters.appendChild(chip);
-    }
+  el.appendChild(sd);
+  // tags
+  for (const t of _tags.slice(0,25)) {
+    const c = _mk("span","mu-filt-tag" + (_tagF === t ? " active" : ""));
+    c.textContent = t;
+    c.onclick = () => { _tagF = _tagF === t ? "" : t; _page = 1; _load(); _renderFilters(); };
+    el.appendChild(c);
   }
 }
 
-// ─── Grid ────────────────────────────────────────────────────────────
-
+/* ────────────────────────────────────────────────────────────────────
+   Grid rendering
+   ──────────────────────────────────────────────────────────────────── */
 function _renderGrid(grid) {
   grid.innerHTML = "";
-  if (_currentFiles.length === 0) {
-    grid.innerHTML = `<div class="mu-gallery-empty" style="grid-column:1/-1"><div class="mu-empty-icon">🖼️</div><div>No outputs found.</div></div>`;
+  if (!_files.length) {
+    grid.innerHTML = '<div class="mu-empty" style="grid-column:1/-1">No outputs found.</div>';
     return;
   }
+  for (const f of _files) {
+    const item = _mk("div","mu-item");
+    item.title = f.relative_path;
 
-  for (const file of _currentFiles) {
-    const item = document.createElement("div");
-    item.className = "mu-gallery-item";
-    item.title = file.relative_path;
-
-    // Thumbnail image (works for both images and videos now)
-    const img = _el("img", { loading: "lazy", alt: file.filename });
-    img.src = _thumbUrl(file);
-    img.onerror = () => {
-      if (file.type === "image") img.src = _viewUrl(file);
-    };
+    const img = _mk("img");
+    img.loading = "lazy";
+    img.alt = f.filename;
+    img.src = _thumbUrl(f);
+    img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // Video badge
-    if (file.type === "video") {
-      const badge = _el("div");
-      badge.className = "mu-item-badge mu-item-badge-video";
-      badge.textContent = "▶ VIDEO";
-      item.appendChild(badge);
+    // video badge
+    if (f.type === "video") {
+      const b = _mk("div","mu-badge mu-badge-vid"); b.textContent = "▶ VID"; item.appendChild(b);
     }
-
-    // Tag indicator
-    if (file.tags && file.tags.length > 0) {
-      const tb = _el("div");
-      tb.className = "mu-item-badge-tags";
-      tb.textContent = `🏷 ${file.tags.length}`;
-      item.appendChild(tb);
+    // tag count badge
+    if (f.tags?.length) {
+      const b = _mk("div","mu-badge mu-badge-tag"); b.textContent = "⏵ "+f.tags.length; item.appendChild(b);
     }
-
-    // Bottom overlay: name + stars
-    const overlay = document.createElement("div");
-    overlay.className = "mu-item-overlay";
-    const nameSpan = _el("span");
-    nameSpan.className = "mu-item-name";
-    nameSpan.textContent = file.filename;
-    overlay.appendChild(nameSpan);
-    if (file.rating > 0) {
-      const stars = _el("span");
-      stars.className = "mu-item-stars";
-      stars.textContent = _starsHtml(file.rating);
-      overlay.appendChild(stars);
+    // stars (always visible when rated)
+    if (f.rating > 0) {
+      const st = _mk("div","mu-item-stars"); st.textContent = _stars(f.rating); item.appendChild(st);
     }
-    item.appendChild(overlay);
+    // hover overlay
+    const ov = _mk("div","mu-ov");
+    const nm = _mk("span","mu-ov-name"); nm.textContent = f.filename;
+    ov.appendChild(nm);
+    item.appendChild(ov);
 
-    item.addEventListener("click", () => _openLightbox(file));
+    // click = lightbox
+    item.addEventListener("click", () => _openLB(f));
+    // right-click = context menu
+    item.addEventListener("contextmenu", e => _openCtx(e, f));
+
     grid.appendChild(item);
   }
 }
 
-// ─── Pagination ──────────────────────────────────────────────────────
-
-function _renderPagination() {
-  const pag = _galleryEl?.querySelector("#mu-gallery-pagination");
-  if (!pag) return;
-  pag.innerHTML = "";
-  if (_totalPages <= 1) {
-    if (_totalFiles > 0) pag.textContent = `${_totalFiles} file${_totalFiles !== 1 ? "s" : ""}`;
-    return;
-  }
-  const prev = _el("button"); prev.textContent = "◀ Prev"; prev.disabled = _page <= 1;
-  prev.addEventListener("click", () => { _page--; _loadGallery(); });
-  pag.appendChild(prev);
-  pag.appendChild(_el("span", { textContent: `${_page} / ${_totalPages}  (${_totalFiles})` }));
-  const next = _el("button"); next.textContent = "Next ▶"; next.disabled = _page >= _totalPages;
-  next.addEventListener("click", () => { _page++; _loadGallery(); });
-  pag.appendChild(next);
+/* ────────────────────────────────────────────────────────────────────
+   Pagination
+   ──────────────────────────────────────────────────────────────────── */
+function _renderPag() {
+  const el = _el_?.querySelector("#mu-pag");
+  if (!el) return;
+  el.innerHTML = "";
+  if (_pages <= 1) { if (_total) el.textContent = `${_total} file${_total!==1?"s":""}`; return; }
+  const prev = _mk("button"); prev.textContent = "◀ Prev"; prev.disabled = _page <= 1;
+  prev.onclick = () => { _page--; _load(); };
+  el.appendChild(prev);
+  el.appendChild(Object.assign(_mk("span"),{textContent:`${_page} / ${_pages}  (${_total})`}));
+  const next = _mk("button"); next.textContent = "Next ▶"; next.disabled = _page >= _pages;
+  next.onclick = () => { _page++; _load(); };
+  el.appendChild(next);
 }
 
-// ─── Lightbox ────────────────────────────────────────────────────────
+/* ────────────────────────────────────────────────────────────────────
+   Context menu (right-click)
+   ──────────────────────────────────────────────────────────────────── */
+function _closeCtx() { document.querySelectorAll(".mu-ctx").forEach(e => e.remove()); }
 
-let _currentLightboxFile = null;
-let _metadataPanelOpen = false;
+function _openCtx(e, f) {
+  e.preventDefault();
+  e.stopPropagation();
+  _closeCtx();
 
-function _openLightbox(file) {
-  _closeLightbox();
-  _currentLightboxFile = file;
-  _metadataPanelOpen = false;
+  const m = _mk("div","mu-ctx");
 
-  // Overlay
-  const overlay = document.createElement("div");
-  overlay.className = "mu-lightbox-overlay";
-  overlay.id = "mu-lightbox-overlay";
+  // Open
+  _ctxItem(m, "Open", () => _openLB(f));
+  _ctxItem(m, "Download", () => { const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click(); });
+  _ctxItem(m, "Copy path", () => { navigator.clipboard.writeText(f.relative_path); _toast("Copied path"); });
+  _ctxSep(m);
 
-  if (file.type === "video") {
-    const v = _el("video");
-    v.src = _viewUrl(file);
-    v.controls = true;
-    v.autoplay = true;
-    v.style.cursor = "default";
-    v.addEventListener("click", e => e.stopPropagation());
-    overlay.appendChild(v);
-  } else {
-    const img = _el("img", { alt: file.filename });
-    img.src = _viewUrl(file);
-    overlay.appendChild(img);
-  }
-  overlay.addEventListener("click", () => _closeLightbox());
-
-  // Nav arrows
-  const idx = _currentFiles.findIndex(f => f.relative_path === file.relative_path);
-  if (idx > 0) {
-    const navPrev = _el("button");
-    navPrev.className = "mu-lb-nav mu-lb-nav-prev";
-    navPrev.innerHTML = "&#9664;";
-    navPrev.addEventListener("click", e => { e.stopPropagation(); _openLightbox(_currentFiles[idx - 1]); });
-    overlay.appendChild(navPrev);
-  }
-  if (idx < _currentFiles.length - 1) {
-    const navNext = _el("button");
-    navNext.className = "mu-lb-nav mu-lb-nav-next";
-    navNext.innerHTML = "&#9654;";
-    navNext.addEventListener("click", e => { e.stopPropagation(); _openLightbox(_currentFiles[idx + 1]); });
-    overlay.appendChild(navNext);
-  }
-
-  // Top bar
-  const topbar = document.createElement("div");
-  topbar.className = "mu-lightbox-topbar";
-  topbar.addEventListener("click", e => e.stopPropagation());
-  const tbLeft = _el("div"); tbLeft.className = "mu-lightbox-topbar-left";
-  tbLeft.innerHTML = `<span style="color:#fff;font-size:13px;font-weight:600;">${_escHtml(file.filename)}</span>`;
-  topbar.appendChild(tbLeft);
-  const tbRight = _el("div"); tbRight.className = "mu-lightbox-topbar-right";
-
-  const dlBtn = _el("button"); dlBtn.className = "mu-lb-btn-download"; dlBtn.textContent = "Download";
-  dlBtn.addEventListener("click", () => { const a = _el("a"); a.href = _viewUrl(file); a.download = file.filename; a.click(); });
-  tbRight.appendChild(dlBtn);
-
-  const infoBtn = _el("button"); infoBtn.className = "mu-lb-btn-info"; infoBtn.textContent = "Metadata";
-  infoBtn.addEventListener("click", () => _toggleMetadataPanel(file));
-  tbRight.appendChild(infoBtn);
-
-  const delBtn = _el("button"); delBtn.className = "mu-lb-btn-delete"; delBtn.textContent = "Delete";
-  delBtn.addEventListener("click", () => _handleDelete(file));
-  tbRight.appendChild(delBtn);
-
-  const closeBtn = _el("button"); closeBtn.className = "mu-lb-btn-close"; closeBtn.textContent = "✕";
-  closeBtn.addEventListener("click", () => _closeLightbox());
-  tbRight.appendChild(closeBtn);
-
-  topbar.appendChild(tbRight);
-
-  // Bottom panel: file info + rating + tags
-  const bottom = document.createElement("div");
-  bottom.className = "mu-lightbox-bottom";
-  bottom.id = "mu-lightbox-bottom";
-  bottom.addEventListener("click", e => e.stopPropagation());
-
-  // File info row
-  const infoRow = _el("div"); infoRow.className = "mu-lb-file-info";
-  infoRow.innerHTML = `
-    <span>${_formatBytes(file.size)}</span>
-    <span>${_formatDate(file.modified)}</span>
-    <span>${file.relative_path}</span>
-  `;
-  bottom.appendChild(infoRow);
-
-  // Rating row
-  const ratingRow = _el("div"); ratingRow.className = "mu-lb-rating";
-  ratingRow.appendChild(_el("span", { textContent: "Rating:", className: "mu-lb-rating-label" }));
-  const starsDiv = _el("div"); starsDiv.className = "mu-lb-stars"; starsDiv.id = "mu-lb-stars";
-  _renderLightboxStars(starsDiv, file);
-  ratingRow.appendChild(starsDiv);
-  bottom.appendChild(ratingRow);
-
-  // Tags row
-  const tagsRow = _el("div"); tagsRow.className = "mu-lb-tags"; tagsRow.id = "mu-lb-tags";
-  _renderLightboxTags(tagsRow, file);
-  bottom.appendChild(tagsRow);
-
-  document.body.appendChild(overlay);
-  document.body.appendChild(topbar);
-  document.body.appendChild(bottom);
-
-  // Keyboard
-  document.addEventListener("keydown", _lightboxKeyHandler);
-}
-
-function _closeLightbox() {
-  document.removeEventListener("keydown", _lightboxKeyHandler);
-  for (const cls of ["mu-lightbox-overlay", "mu-lightbox-topbar", "mu-lightbox-bottom", "mu-metadata-panel"]) {
-    document.querySelectorAll(`.${cls}`).forEach(e => e.remove());
-  }
-  // Also remove by ID
-  for (const id of ["mu-lightbox-overlay", "mu-lightbox-bottom"]) {
-    document.getElementById(id)?.remove();
-  }
-  _currentLightboxFile = null;
-  _metadataPanelOpen = false;
-}
-
-function _lightboxKeyHandler(e) {
-  if (e.key === "Escape") { _closeLightbox(); return; }
-  if (!_currentLightboxFile) return;
-  const idx = _currentFiles.findIndex(f => f.relative_path === _currentLightboxFile.relative_path);
-  if (e.key === "ArrowRight" && idx < _currentFiles.length - 1) _openLightbox(_currentFiles[idx + 1]);
-  if (e.key === "ArrowLeft" && idx > 0) _openLightbox(_currentFiles[idx - 1]);
-}
-
-// ─── Lightbox: Stars ─────────────────────────────────────────────────
-
-function _renderLightboxStars(container, file) {
-  container.innerHTML = "";
+  // Inline stars rating
+  const sr = _mk("div","mu-ctx-stars");
+  const sl = _mk("span","mu-ctx-stars-label"); sl.textContent = "Rate:"; sr.appendChild(sl);
   for (let i = 1; i <= 5; i++) {
-    const star = _el("span");
-    star.textContent = "★";
-    star.className = i <= file.rating ? "on" : "";
-    star.addEventListener("click", async () => {
-      const newRating = file.rating === i ? 0 : i;
-      try {
-        const res = await apiPut("/outputs/rating", { file_path: file.relative_path, rating: newRating });
-        if (res.ok) {
-          file.rating = newRating;
-          _renderLightboxStars(container, file);
-        }
-      } catch {}
-    });
-    container.appendChild(star);
+    const s = _mk("span"); s.textContent = "★"; s.className = i <= f.rating ? "on" : "";
+    s.onmouseenter = () => { sr.querySelectorAll("span:not(.mu-ctx-stars-label)").forEach((x,j) => x.className = j < i ? "on" : ""); };
+    s.onmouseleave = () => { sr.querySelectorAll("span:not(.mu-ctx-stars-label)").forEach((x,j) => x.className = j < f.rating ? "on" : ""); };
+    s.onclick = async () => {
+      const nr = f.rating === i ? 0 : i;
+      try { const r = await apiPut("/outputs/rating",{file_path:f.relative_path,rating:nr}); if(r.ok){f.rating=nr;} } catch{}
+      _closeCtx(); _load();
+    };
+    sr.appendChild(s);
   }
-}
+  m.appendChild(sr);
+  if (f.rating > 0) { _ctxItem(m, "Clear rating", async () => { try{await apiPut("/outputs/rating",{file_path:f.relative_path,rating:0});f.rating=0;}catch{}_closeCtx();_load(); }); }
 
-// ─── Lightbox: Tags ──────────────────────────────────────────────────
-
-function _renderLightboxTags(container, file) {
-  container.innerHTML = "";
-  container.appendChild(_el("span", { textContent: "Tags:", className: "mu-lb-tags-label" }));
-
-  for (const tag of (file.tags || [])) {
-    const chip = _el("span"); chip.className = "mu-lb-tag";
-    chip.textContent = tag;
-    const rm = _el("button"); rm.className = "mu-lb-tag-remove"; rm.textContent = "×";
-    rm.addEventListener("click", async () => {
-      try {
-        const p = new URLSearchParams({ file_path: file.relative_path, tag });
-        const res = await apiDelete(`/outputs/tags?${p}`);
-        if (res.ok) {
-          file.tags = file.tags.filter(t => t !== tag);
-          _renderLightboxTags(container, file);
-          _loadTagPalette();
-        }
-      } catch {}
-    });
-    chip.appendChild(rm);
-    container.appendChild(chip);
+  _ctxSep(m);
+  _ctxItem(m, "Add tag…", () => { _closeCtx(); _promptTag(f); });
+  if (f.tags?.length) {
+    _ctxItem(m, `Tags: ${f.tags.join(", ")}`, null);
   }
+  _ctxSep(m);
+  _ctxItem(m, "Metadata", () => { _closeCtx(); _openLB(f); setTimeout(() => _toggleMeta(f), 100); });
+  _ctxItem(m, "Delete", () => { _closeCtx(); _deletefile(f); }, true);
 
-  // Add tag input
-  const input = _el("input", { type: "text", placeholder: "Add tag…", className: "mu-lb-tag-input" });
-  input.addEventListener("keydown", async (e) => {
-    if (e.key !== "Enter") return;
-    const val = input.value.trim().toLowerCase();
-    if (!val) return;
-    try {
-      const res = await apiPost("/outputs/tags", { file_path: file.relative_path, tags: [val] });
-      if (res.ok) {
-        if (!file.tags) file.tags = [];
-        if (!file.tags.includes(val)) file.tags.push(val);
-        input.value = "";
-        _renderLightboxTags(container, file);
-        _loadTagPalette();
-      }
-    } catch {}
+  // Position
+  m.style.left = e.clientX + "px";
+  m.style.top = e.clientY + "px";
+  document.body.appendChild(m);
+
+  // Adjust if off-screen
+  requestAnimationFrame(() => {
+    const r = m.getBoundingClientRect();
+    if (r.right > window.innerWidth) m.style.left = (window.innerWidth - r.width - 4) + "px";
+    if (r.bottom > window.innerHeight) m.style.top = (window.innerHeight - r.height - 4) + "px";
   });
-  container.appendChild(input);
+
+  // Close on any click elsewhere
+  const closer = (ev) => {
+    if (!m.contains(ev.target)) { _closeCtx(); document.removeEventListener("click", closer, true); }
+  };
+  setTimeout(() => document.addEventListener("click", closer, true), 0);
 }
 
-// ─── Metadata panel ──────────────────────────────────────────────────
+function _ctxItem(menu, label, fn, danger) {
+  const d = _mk("div","mu-ctx-item" + (danger ? " danger" : ""));
+  d.textContent = label;
+  if (fn) d.onclick = () => { _closeCtx(); fn(); };
+  else d.style.opacity = "0.6";
+  menu.appendChild(d);
+}
+function _ctxSep(menu) { menu.appendChild(_mk("div","mu-ctx-sep")); }
 
-async function _toggleMetadataPanel(file) {
-  const existing = document.querySelector(".mu-metadata-panel");
-  if (existing) {
-    existing.remove();
-    _metadataPanelOpen = false;
-    return;
+/* ────────────────────────────────────────────────────────────────────
+   Prompt tag input (dialog-style)
+   ──────────────────────────────────────────────────────────────────── */
+function _promptTag(f) {
+  const tag = prompt("Enter tag name:");
+  if (!tag?.trim()) return;
+  apiPost("/outputs/tags", {file_path: f.relative_path, tags: [tag.trim().toLowerCase()]})
+    .then(r => { if (r.ok) { _loadTags(); _load(); _toast("Tag added"); } })
+    .catch(() => {});
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Lightbox
+   ──────────────────────────────────────────────────────────────────── */
+let _lbFile = null;
+
+function _openLB(f) {
+  _closeLB();
+  _lbFile = f;
+
+  const wrap = _mk("div","mu-lb"); wrap.id = "mu-lb";
+
+  /* top bar */
+  const top = _mk("div","mu-lb-top");
+  top.onclick = e => e.stopPropagation();
+  const tl = _mk("div","mu-lb-top-left"); tl.textContent = f.filename;
+  top.appendChild(tl);
+  const tr = _mk("div","mu-lb-top-right");
+
+  const btnDl = _mk("button","mu-lb-btn-dl"); btnDl.textContent = "Download";
+  btnDl.onclick = () => { const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click(); };
+  tr.appendChild(btnDl);
+
+  const btnMeta = _mk("button"); btnMeta.textContent = "Metadata";
+  btnMeta.onclick = () => _toggleMeta(f);
+  tr.appendChild(btnMeta);
+
+  const btnDel = _mk("button","mu-lb-btn-del"); btnDel.textContent = "Delete";
+  btnDel.onclick = () => _deletefile(f);
+  tr.appendChild(btnDel);
+
+  const btnX = _mk("button"); btnX.textContent = "✕";
+  btnX.onclick = () => _closeLB();
+  tr.appendChild(btnX);
+
+  top.appendChild(tr);
+  wrap.appendChild(top);
+
+  /* content area */
+  const body = _mk("div","mu-lb-body");
+  body.onclick = () => _closeLB();
+
+  if (f.type === "video") {
+    const v = _mk("video"); v.src = _viewUrl(f); v.controls = true; v.autoplay = true;
+    v.style.cursor = "default"; v.onclick = e => e.stopPropagation();
+    body.appendChild(v);
+  } else {
+    const img = _mk("img"); img.src = _viewUrl(f); img.alt = f.filename;
+    img.onclick = e => e.stopPropagation();
+    body.appendChild(img);
   }
 
-  const panel = document.createElement("div");
-  panel.className = "mu-metadata-panel";
-  panel.addEventListener("click", e => e.stopPropagation());
+  // nav arrows
+  const idx = _files.findIndex(x => x.relative_path === f.relative_path);
+  if (idx > 0) {
+    const p = _mk("button","mu-lb-nav mu-lb-nav-prev"); p.innerHTML = "&#9664;";
+    p.onclick = e => { e.stopPropagation(); _openLB(_files[idx-1]); };
+    body.appendChild(p);
+  }
+  if (idx < _files.length - 1) {
+    const n = _mk("button","mu-lb-nav mu-lb-nav-next"); n.innerHTML = "&#9654;";
+    n.onclick = e => { e.stopPropagation(); _openLB(_files[idx+1]); };
+    body.appendChild(n);
+  }
+  wrap.appendChild(body);
 
-  const header = _el("h3");
-  header.textContent = "Metadata";
-  const closeBtn = _el("button"); closeBtn.className = "mu-meta-close"; closeBtn.textContent = "✕";
-  closeBtn.addEventListener("click", () => { panel.remove(); _metadataPanelOpen = false; });
-  header.appendChild(closeBtn);
-  panel.appendChild(header);
+  /* bottom panel */
+  const bot = _mk("div","mu-lb-bottom");
+  bot.onclick = e => e.stopPropagation();
 
-  panel.appendChild(_el("div", { textContent: "Loading…", className: "mu-gallery-loading" }));
+  // file info
+  const info = _mk("div","mu-lb-info");
+  info.innerHTML = `<span>${_bytes(f.size)}</span><span>${_date(f.modified)}</span><span>${_esc(f.relative_path)}</span>`;
+  bot.appendChild(info);
+
+  // rating
+  const rr = _mk("div","mu-lb-rating");
+  rr.appendChild(Object.assign(_mk("span","mu-lb-rating-lbl"),{textContent:"Rating:"}));
+  const sd = _mk("div","mu-lb-stars"); sd.id = "mu-lb-stars";
+  _renderLBStars(sd, f);
+  rr.appendChild(sd);
+  bot.appendChild(rr);
+
+  // tags
+  const trow = _mk("div","mu-lb-tags"); trow.id = "mu-lb-tags";
+  _renderLBTags(trow, f);
+  bot.appendChild(trow);
+
+  wrap.appendChild(bot);
+  document.body.appendChild(wrap);
+  document.addEventListener("keydown", _lbKey);
+}
+
+function _closeLB() {
+  document.removeEventListener("keydown", _lbKey);
+  document.getElementById("mu-lb")?.remove();
+  document.querySelectorAll(".mu-meta").forEach(e => e.remove());
+  _lbFile = null;
+}
+
+function _lbKey(e) {
+  if (e.key === "Escape") { _closeLB(); return; }
+  if (!_lbFile) return;
+  const i = _files.findIndex(x => x.relative_path === _lbFile.relative_path);
+  if (e.key === "ArrowRight" && i < _files.length - 1) _openLB(_files[i+1]);
+  if (e.key === "ArrowLeft" && i > 0) _openLB(_files[i-1]);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Lightbox — stars
+   ──────────────────────────────────────────────────────────────────── */
+function _renderLBStars(el, f) {
+  el.innerHTML = "";
+  for (let i = 1; i <= 5; i++) {
+    const s = _mk("span"); s.textContent = "★"; s.className = i <= f.rating ? "on" : "";
+    s.onclick = async () => {
+      const nr = f.rating === i ? 0 : i;
+      try { const r = await apiPut("/outputs/rating",{file_path:f.relative_path,rating:nr}); if(r.ok) f.rating=nr; } catch{}
+      _renderLBStars(el, f);
+    };
+    el.appendChild(s);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Lightbox — tags
+   ──────────────────────────────────────────────────────────────────── */
+function _renderLBTags(el, f) {
+  el.innerHTML = "";
+  el.appendChild(Object.assign(_mk("span","mu-lb-tags-lbl"),{textContent:"Tags:"}));
+  for (const t of (f.tags||[])) {
+    const c = _mk("span","mu-lb-tag"); c.textContent = t;
+    const rm = _mk("button","mu-lb-tag-rm"); rm.textContent = "×";
+    rm.onclick = async () => {
+      try {
+        const r = await apiDelete(`/outputs/tags?${new URLSearchParams({file_path:f.relative_path,tag:t})}`);
+        if (r.ok) { f.tags = f.tags.filter(x=>x!==t); _renderLBTags(el,f); _loadTags(); }
+      } catch{}
+    };
+    c.appendChild(rm);
+    el.appendChild(c);
+  }
+  // add input
+  const inp = _mk("input","mu-lb-tag-input"); inp.type = "text"; inp.placeholder = "Add tag…";
+  inp.onkeydown = async (e) => {
+    if (e.key !== "Enter") return;
+    const v = inp.value.trim().toLowerCase(); if (!v) return;
+    try {
+      const r = await apiPost("/outputs/tags",{file_path:f.relative_path,tags:[v]});
+      if (r.ok) { if (!f.tags) f.tags = []; if (!f.tags.includes(v)) f.tags.push(v); inp.value = ""; _renderLBTags(el,f); _loadTags(); }
+    } catch{}
+  };
+  el.appendChild(inp);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Metadata side-panel
+   ──────────────────────────────────────────────────────────────────── */
+async function _toggleMeta(f) {
+  const ex = document.querySelector(".mu-meta");
+  if (ex) { ex.remove(); return; }
+
+  const panel = _mk("div","mu-meta");
+  panel.onclick = e => e.stopPropagation();
+
+  const h = _mk("h3"); h.textContent = "Metadata";
+  const cb = _mk("button","mu-meta-close"); cb.textContent = "✕"; cb.onclick = () => panel.remove();
+  h.appendChild(cb);
+  panel.appendChild(h);
+
+  panel.appendChild(Object.assign(_mk("div","mu-loading"),{textContent:"Loading…"}));
   document.body.appendChild(panel);
-  _metadataPanelOpen = true;
 
   try {
-    const p = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "" });
-    const res = await apiGet(`/outputs/metadata?${p}`);
-    if (!res.ok) {
-      panel.querySelector(".mu-gallery-loading").textContent = "Failed to load metadata";
-      return;
+    const r = await apiGet(`/outputs/metadata?${new URLSearchParams({filename:f.filename,subfolder:f.subfolder||""})}`);
+    if (!r.ok) { panel.querySelector(".mu-loading").textContent = "Failed"; return; }
+    const m = await r.json();
+    panel.querySelector(".mu-loading")?.remove();
+
+    // basic info
+    const sec1 = _mk("div","mu-meta-sec");
+    sec1.appendChild(Object.assign(_mk("h4"),{textContent:"File Info"}));
+    const t1 = _mk("table","mu-meta-tbl");
+    t1.innerHTML = `
+      <tr><td>Name</td><td>${_esc(m.filename)}</td></tr>
+      <tr><td>Size</td><td>${_bytes(m.size)}</td></tr>
+      <tr><td>Modified</td><td>${_date(m.modified)}</td></tr>
+      <tr><td>Type</td><td>${m.extension}</td></tr>`;
+    sec1.appendChild(t1);
+    panel.appendChild(sec1);
+
+    // embedded metadata
+    const emb = m.embedded || {};
+    const simpleF = {}, jsonF = {};
+    for (const [k,v] of Object.entries(emb)) {
+      if (typeof v === "object" && v !== null) jsonF[k] = v; else simpleF[k] = v;
     }
-    const meta = await res.json();
 
-    // Remove loading
-    panel.querySelector(".mu-gallery-loading")?.remove();
-
-    // Basic info section
-    const basicSec = _el("div"); basicSec.className = "mu-metadata-section";
-    basicSec.appendChild(_el("h4", { textContent: "File Info" }));
-    const basicTable = _el("table"); basicTable.className = "mu-meta-table";
-    basicTable.innerHTML = `
-      <tr><td>Name</td><td>${_escHtml(meta.filename)}</td></tr>
-      <tr><td>Size</td><td>${_formatBytes(meta.size)}</td></tr>
-      <tr><td>Modified</td><td>${_formatDate(meta.modified)}</td></tr>
-      <tr><td>Type</td><td>${meta.extension}</td></tr>
-    `;
-    basicSec.appendChild(basicTable);
-    panel.appendChild(basicSec);
-
-    // Embedded metadata
-    const emb = meta.embedded || {};
-    const embKeys = Object.keys(emb);
-
-    if (embKeys.length > 0) {
-      // Separate structured (JSON) fields from simple fields
-      const simpleFields = {};
-      const jsonFields = {};
-
-      for (const [k, v] of Object.entries(emb)) {
-        if (typeof v === "object" && v !== null) {
-          jsonFields[k] = v;
-        } else {
-          simpleFields[k] = v;
-        }
+    if (Object.keys(simpleF).length) {
+      const sec = _mk("div","mu-meta-sec");
+      sec.appendChild(Object.assign(_mk("h4"),{textContent:"Properties"}));
+      const tbl = _mk("table","mu-meta-tbl");
+      for (const [k,v] of Object.entries(simpleF)) {
+        const lbl = k.startsWith("_") ? k.slice(1) : k;
+        const tr = _mk("tr"); tr.innerHTML = `<td>${_esc(lbl)}</td><td>${_esc(String(v))}</td>`;
+        tbl.appendChild(tr);
       }
-
-      // Simple fields table
-      if (Object.keys(simpleFields).length > 0) {
-        const sec = _el("div"); sec.className = "mu-metadata-section";
-        sec.appendChild(_el("h4", { textContent: "Properties" }));
-        const tbl = _el("table"); tbl.className = "mu-meta-table";
-        for (const [k, v] of Object.entries(simpleFields)) {
-          const label = k.startsWith("_") ? k.slice(1) : k;
-          const tr = _el("tr");
-          tr.innerHTML = `<td>${_escHtml(label)}</td><td>${_escHtml(String(v))}</td>`;
-          tbl.appendChild(tr);
-        }
-        sec.appendChild(tbl);
-        panel.appendChild(sec);
-      }
-
-      // JSON fields (prompt, workflow, etc)
-      for (const [k, v] of Object.entries(jsonFields)) {
-        const sec = _el("div"); sec.className = "mu-metadata-section";
-        const label = k.startsWith("_") ? k.slice(1) : k;
-        sec.appendChild(_el("h4", { textContent: label }));
-
-        const jsonStr = JSON.stringify(v, null, 2);
-        const pre = _el("div"); pre.className = "mu-meta-json";
-        pre.textContent = jsonStr.length > 500 ? jsonStr.slice(0, 500) + "…" : jsonStr;
-
-        if (jsonStr.length > 500) {
-          const toggle = _el("button"); toggle.className = "mu-meta-json-toggle"; toggle.textContent = "Show full";
-          let expanded = false;
-          toggle.addEventListener("click", () => {
-            expanded = !expanded;
-            pre.textContent = expanded ? jsonStr : jsonStr.slice(0, 500) + "…";
-            toggle.textContent = expanded ? "Collapse" : "Show full";
-          });
-          sec.appendChild(pre);
-          sec.appendChild(toggle);
-        } else {
-          sec.appendChild(pre);
-        }
-
-        // Copy button
-        const copyBtn = _el("button"); copyBtn.className = "mu-meta-json-toggle"; copyBtn.textContent = "Copy";
-        copyBtn.style.marginLeft = "4px";
-        copyBtn.addEventListener("click", () => {
-          navigator.clipboard.writeText(jsonStr);
-          copyBtn.textContent = "Copied!";
-          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
-        });
-        sec.appendChild(copyBtn);
-
-        panel.appendChild(sec);
-      }
-    } else {
-      const sec = _el("div"); sec.className = "mu-metadata-section";
-      sec.textContent = "No embedded metadata found.";
+      sec.appendChild(tbl);
       panel.appendChild(sec);
     }
 
-  } catch (e) {
-    const loading = panel.querySelector(".mu-gallery-loading");
-    if (loading) loading.textContent = `Error: ${e.message}`;
-  }
-}
-
-// ─── Delete handler ──────────────────────────────────────────────────
-
-async function _handleDelete(file) {
-  if (!confirm(`Delete ${file.filename}?`)) return;
-  try {
-    const p = new URLSearchParams({ filename: file.filename });
-    if (file.subfolder) p.set("subfolder", file.subfolder);
-    const res = await apiDelete(`/outputs/file?${p}`);
-    if (res.ok) {
-      _closeLightbox();
-      _loadGallery();
-      const { showToast } = await import("./multiuser.js");
-      showToast("success", "Deleted", file.filename);
-    } else {
-      const err = await res.json().catch(() => ({}));
-      const { showToast } = await import("./multiuser.js");
-      showToast("error", "Delete", err.error || "Failed");
+    for (const [k,v] of Object.entries(jsonF)) {
+      const sec = _mk("div","mu-meta-sec");
+      const lbl = k.startsWith("_") ? k.slice(1) : k;
+      sec.appendChild(Object.assign(_mk("h4"),{textContent:lbl}));
+      const js = JSON.stringify(v,null,2);
+      const pre = _mk("div","mu-meta-json");
+      pre.textContent = js.length > 500 ? js.slice(0,500)+"…" : js;
+      sec.appendChild(pre);
+      if (js.length > 500) {
+        let exp = false;
+        const tb = _mk("button","mu-meta-btn"); tb.textContent = "Show full";
+        tb.onclick = () => { exp = !exp; pre.textContent = exp ? js : js.slice(0,500)+"…"; tb.textContent = exp ? "Collapse" : "Show full"; };
+        sec.appendChild(tb);
+      }
+      const cp = _mk("button","mu-meta-btn"); cp.textContent = "Copy"; cp.style.marginLeft = "4px";
+      cp.onclick = () => { navigator.clipboard.writeText(js); cp.textContent = "Copied!"; setTimeout(()=>cp.textContent="Copy",1500); };
+      sec.appendChild(cp);
+      panel.appendChild(sec);
     }
-  } catch (e) {
-    const { showToast } = await import("./multiuser.js");
-    showToast("error", "Delete", e.message);
+
+    if (!Object.keys(emb).length) {
+      panel.appendChild(Object.assign(_mk("div","mu-meta-sec"),{textContent:"No embedded metadata."}));
+    }
+  } catch(e) {
+    const ld = panel.querySelector(".mu-loading");
+    if (ld) ld.textContent = "Error: "+e.message;
   }
 }
 
-// ─── Escape HTML ─────────────────────────────────────────────────────
+/* ────────────────────────────────────────────────────────────────────
+   Delete
+   ──────────────────────────────────────────────────────────────────── */
+async function _deletefile(f) {
+  if (!confirm(`Delete ${f.filename}?`)) return;
+  try {
+    const p = new URLSearchParams({filename:f.filename});
+    if (f.subfolder) p.set("subfolder",f.subfolder);
+    const r = await apiDelete(`/outputs/file?${p}`);
+    if (r.ok) { _closeLB(); _load(); _toast("Deleted"); }
+    else { const e = await r.json().catch(()=>({})); _toast(e.error||"Delete failed","error"); }
+  } catch(e) { _toast(e.message,"error"); }
+}
 
-function _escHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+/* ────────────────────────────────────────────────────────────────────
+   Toast (minimal)
+   ──────────────────────────────────────────────────────────────────── */
+async function _toast(msg, type) {
+  try {
+    const {showToast} = await import("./multiuser.js");
+    showToast(type||"success", type==="error"?"Error":"Gallery", msg);
+  } catch {
+    console.log("[Gallery]", msg);
+  }
 }

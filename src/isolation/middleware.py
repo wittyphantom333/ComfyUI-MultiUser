@@ -111,14 +111,19 @@ async def _rewrite_prompt_outputs(
         if not isinstance(inputs, dict):
             continue
 
-        # Any node that has a filename_prefix input and is known to save/preview
-        if class_type in ("SaveImage", "PreviewImage", "SaveAnimatedWEBP",
-                          "SaveAnimatedPNG", "SaveLatent"):
+        # Match ANY node that writes files via filename_prefix.
+        # This catches standard SaveImage, PreviewImage, plus all custom
+        # / third-party save nodes (SaveImageExtended, WAS_Save_Image, etc.)
+        # that follow ComfyUI's filename_prefix convention.
+        if "filename_prefix" in inputs:
             prefix = inputs.get("filename_prefix", "ComfyUI")
-            # Avoid double-prefixing on retry
-            if not prefix.startswith(f"{username}/"):
+            if isinstance(prefix, str) and not prefix.startswith(f"{username}/"):
                 inputs["filename_prefix"] = f"{username}/{prefix}"
                 modified = True
+                logger.debug(
+                    "Isolation: rewrote %s.filename_prefix -> %s for user %s",
+                    class_type, inputs["filename_prefix"], username,
+                )
 
     if modified:
         # Patch the cached body so downstream (ComfyUI's /prompt handler and
