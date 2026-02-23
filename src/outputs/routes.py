@@ -136,37 +136,54 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     }
 
 
-# Sampler node class_type substrings that indicate actual generation data.
-_SAMPLER_KEYWORDS = ("KSampler", "ksampler", "SamplerCustom", "samplercustom")
+# Sampling input keys that confirm a node is a real sampler (not just named like one).
+# Matches Majoor's _sampler_inputs_look_sampling() check.
+_SAMPLING_INPUT_KEYS = {"steps", "cfg", "cfg_scale", "seed", "denoise"}
+
+
+def _node_is_sampler(node: dict) -> bool:
+    """Check if a prompt-graph node looks like a real sampler.
+
+    Matches Majoor's _node_looks_like_sampler(node, require_sampling_inputs=True):
+    1. class_type contains 'ksampler', 'samplercustom', or 'sampler'
+    2. BUT NOT if class_type contains 'select' (KSamplerSelect etc.)
+    3. Node inputs must contain at least one sampling key (steps/cfg/seed/denoise)
+    """
+    ct = str(node.get("class_type", "")).lower()
+    if not ct:
+        return False
+    # Exclude selector/utility nodes
+    if "select" in ct:
+        return False
+    # Must match a sampler-like class_type
+    if not ("ksampler" in ct or "samplercustom" in ct or "sampler" in ct):
+        return False
+    # For prompt graphs, require actual sampling inputs
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        return False
+    return bool(_SAMPLING_INPUT_KEYS & inputs.keys())
 
 
 def _prompt_has_sampler(prompt_text: str) -> bool:
-    """Check if a prompt JSON string references a sampler class_type.
+    """Check if a prompt JSON graph contains a real sampler node.
 
     The prompt graph is a dict of node_id → {class_type, inputs, ...}.
-    A sampler node means actual image generation occurred.
-    We first try JSON parsing for accuracy, then fall back to string search.
+    A sampler node (with real sampling inputs) means actual generation occurred.
+    Returns False on parse failure — better to miss a '+' than show a false one.
     """
-    # Fast string check first
-    has_any = any(kw in prompt_text for kw in _SAMPLER_KEYWORDS)
-    if not has_any:
-        return False
-
-    # Verify via JSON parse: check class_type values specifically
-    # (avoids false positives from sampler keywords in text prompts)
     try:
         graph = json.loads(prompt_text)
-        if isinstance(graph, dict):
-            for node in graph.values():
-                if isinstance(node, dict):
-                    ct = str(node.get("class_type", "")).lower()
-                    if "ksampler" in ct or "samplercustom" in ct:
-                        if "select" not in ct:  # exclude selector nodes
-                            return True
+    except (json.JSONDecodeError, TypeError, ValueError):
         return False
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        # JSON parse failed — rely on string match
-        return True
+
+    if not isinstance(graph, dict):
+        return False
+
+    for node in graph.values():
+        if isinstance(node, dict) and _node_is_sampler(node):
+            return True
+    return False
 
 
 def _has_generation_data(path: Path) -> bool:
