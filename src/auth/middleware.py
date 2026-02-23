@@ -213,40 +213,62 @@ async def _try_identify_user(request: web.Request, quiet: bool = False) -> Optio
 
     # 3. JS-set cookie — most reliable behind reverse proxies because it is
     #    set with document.cookie in the browser, not via Set-Cookie header.
+    #    Supports both JWT and API tokens (cmu_ prefix).
     if user is None:
         from urllib.parse import unquote
         js_token = request.cookies.get("multiuser_token")
         if js_token:
             js_token = unquote(js_token)  # JS uses encodeURIComponent
-            user = await _get_user_from_jwt(js_token)
-            if user is None:
-                logger.debug("JS cookie JWT failed for %s", request.path)
+            if js_token.startswith("cmu_"):
+                user = await _get_user_from_api_token(js_token)
+                if user is None:
+                    logger.debug("JS cookie API token failed for %s", request.path)
+                else:
+                    logger.debug("Auth via JS cookie API token for %s %s", request.method, request.path)
             else:
-                logger.debug("Auth via JS cookie for %s %s", request.method, request.path)
+                user = await _get_user_from_jwt(js_token)
+                if user is None:
+                    logger.debug("JS cookie JWT failed for %s", request.path)
+                else:
+                    logger.debug("Auth via JS cookie for %s %s", request.method, request.path)
 
     # 4. X-MultiUser-Token custom header — some proxies strip the standard
     #    Authorization header but pass through custom X- headers.
+    #    Supports both JWT and API tokens (cmu_ prefix).
     if user is None:
         custom_token = request.headers.get("X-MultiUser-Token", "")
         if custom_token:
-            user = await _get_user_from_jwt(custom_token)
-            if user is None:
-                logger.debug("X-MultiUser-Token header JWT failed for %s", request.path)
+            if custom_token.startswith("cmu_"):
+                user = await _get_user_from_api_token(custom_token)
+                if user is None:
+                    logger.debug("X-MultiUser-Token API token failed for %s (prefix=%s)",
+                                request.path, custom_token[:12])
+                else:
+                    logger.debug("Auth via X-MultiUser-Token API token for %s %s", request.method, request.path)
             else:
-                logger.debug("Auth via X-MultiUser-Token header for %s %s", request.method, request.path)
+                user = await _get_user_from_jwt(custom_token)
+                if user is None:
+                    logger.debug("X-MultiUser-Token header JWT failed for %s", request.path)
+                else:
+                    logger.debug("Auth via X-MultiUser-Token header for %s %s", request.method, request.path)
 
     if user is None and not quiet:
         has_creds = bool(
-            request.cookies.get("multiuser_session")
+            request.headers.get("Authorization")
+            or request.cookies.get("multiuser_session")
             or request.cookies.get("multiuser_token")
             or request.headers.get("X-MultiUser-Token")
         )
         if has_creds:
-            logger.warning("All auth methods failed for %s %s (session_cookie=%s, js_cookie=%s, x_header=%s)",
+            logger.warning("All auth methods failed for %s %s (bearer=%s, session_cookie=%s, js_cookie=%s, x_header=%s)",
                            request.method, request.path,
+                           bool(request.headers.get("Authorization")),
                            bool(request.cookies.get("multiuser_session")),
                            bool(request.cookies.get("multiuser_token")),
                            bool(request.headers.get("X-MultiUser-Token")))
+        else:
+            logger.warning("No credentials provided for protected route %s %s",
+                           request.method, request.path)
 
     return user
 
