@@ -1,7 +1,7 @@
 """SQL schema and migrations for ComfyUI-MultiUser."""
 
 # Schema version - increment when adding migrations
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Base schema (version 1)
 SCHEMA_V1 = [
@@ -205,6 +205,34 @@ SCHEMA_V1 = [
     INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
     VALUES ((SELECT id FROM groups WHERE name = 'users'), 'model', '*', 'allow', 0)
     """,
+
+    # ── Output asset tags ──
+    """
+    CREATE TABLE IF NOT EXISTS output_tags (
+        id INTEGER PRIMARY KEY {autoincrement},
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, file_path, tag)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_output_tags_user_file ON output_tags(user_id, file_path)",
+    "CREATE INDEX IF NOT EXISTS idx_output_tags_tag ON output_tags(tag)",
+
+    # ── Output asset ratings ──
+    """
+    CREATE TABLE IF NOT EXISTS output_ratings (
+        id INTEGER PRIMARY KEY {autoincrement},
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL UNIQUE,
+        rating INTEGER NOT NULL DEFAULT 0 CHECK(rating >= 0 AND rating <= 5),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_output_ratings_user ON output_ratings(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_output_ratings_path ON output_ratings(file_path)",
 ]
 
 
@@ -281,6 +309,35 @@ MIGRATIONS: dict[int, list[str]] = {
         INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
         VALUES ((SELECT id FROM groups WHERE name = 'users'), 'model', '*', 'allow', 0)
         """,
+    ],
+    3: [
+        # ── Output asset tags ──
+        """
+        CREATE TABLE IF NOT EXISTS output_tags (
+            id INTEGER PRIMARY KEY {autoincrement},
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, file_path, tag)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_output_tags_user_file ON output_tags(user_id, file_path)",
+        "CREATE INDEX IF NOT EXISTS idx_output_tags_tag ON output_tags(tag)",
+
+        # ── Output asset ratings ──
+        """
+        CREATE TABLE IF NOT EXISTS output_ratings (
+            id INTEGER PRIMARY KEY {autoincrement},
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL UNIQUE,
+            rating INTEGER NOT NULL DEFAULT 0 CHECK(rating >= 0 AND rating <= 5),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_output_ratings_user ON output_ratings(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_output_ratings_path ON output_ratings(file_path)",
     ],
 }
 
