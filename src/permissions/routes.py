@@ -75,9 +75,9 @@ def setup_permission_routes(routes):
                 status=400
             )
 
-        if resource_type not in ("node", "model", "feature"):
+        if resource_type not in ("node", "model", "feature", "sidebar"):
             return web.json_response(
-                {"error": "resource_type must be 'node', 'model', or 'feature'"},
+                {"error": "resource_type must be 'node', 'model', 'feature', or 'sidebar'"},
                 status=400
             )
 
@@ -203,4 +203,43 @@ def setup_permission_routes(routes):
             "allowed_nodes": allowed,
             "total_nodes": len(all_nodes),
             "is_admin": bool(user.get("is_admin")),
+        })
+
+    @routes.get("/multiuser/my-sidebar")
+    async def my_sidebar(request: web.Request):
+        """Return the list of sidebar tab IDs that should be hidden for the current user.
+
+        Sidebar visibility is controlled by:
+        1. Global config: sidebar.hidden_tabs (applies to all non-admin users)
+        2. Permissions: resource_type='sidebar', action='deny' (per-group)
+
+        Tab IDs are matched against resource_pattern (supports wildcards).
+        Admins always see all tabs.
+        """
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        # Admins always see everything
+        if user.get("is_admin"):
+            return web.json_response({"hidden_tabs": [], "is_admin": True})
+
+        # Start with global config-level hidden tabs
+        from ..config import get_config
+        global_hidden = get_config("sidebar", "hidden_tabs", default=[]) or []
+        hidden = list(global_hidden)
+
+        # Add per-group deny rules from the permission system
+        from .engine import get_user_permissions
+        permissions = await get_user_permissions(user["id"])
+        sidebar_perms = [p for p in permissions if p["resource_type"] == "sidebar"]
+
+        for p in sidebar_perms:
+            if p["action"] == "deny":
+                if p["resource_pattern"] not in hidden:
+                    hidden.append(p["resource_pattern"])
+
+        return web.json_response({
+            "hidden_tabs": hidden,
+            "is_admin": False,
         })

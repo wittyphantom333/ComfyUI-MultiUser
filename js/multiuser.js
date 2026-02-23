@@ -18,6 +18,7 @@ import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
 import { renderUserSidebar } from "./user-menu.js";
 import { renderAdminSidebar } from "./admin-panel.js";
 import { renderOutputGallery, renderAllOutputsGallery } from "./output-gallery.js";
+import { initTabFilter, stopTabFilter } from "./tab-filter.js";
 
 /** Shared auth state */
 let _authenticated = false;
@@ -158,9 +159,16 @@ app.registerExtension({
   /**
    * Called after ComfyUI is fully set up.
    * Attempt registration again in case init() ran before the sidebar was ready.
+   * Then activate the dynamic sidebar tab filter.
    */
   async setup() {
     _registerSidebarTabs();
+
+    // Start the tab filter after a short delay so all extensions have
+    // had a chance to register their sidebar tabs.
+    if (_authenticated) {
+      setTimeout(() => initTabFilter(), 1000);
+    }
   },
 
   /**
@@ -226,6 +234,7 @@ async function _changePassword() {
 async function _logout() {
   try { await apiPost("/logout"); } catch {}
   clearToken();
+  stopTabFilter();
   window.__multiuser_current_user = null;
   location.reload();
 }

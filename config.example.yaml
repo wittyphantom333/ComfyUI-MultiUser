@@ -100,6 +100,28 @@ isolation:
   # Enable server-side per-user workflow storage (/multiuser/workflows API).
   per_user_workflows: true
 
+# Sidebar tab visibility
+# Control which ComfyUI sidebar tabs are visible to non-admin users.
+# Uses the permission system (resource_type = "sidebar") for per-group control.
+# Manage via the Admin Panel → Sidebar tab in the UI.
+#
+# Well-known tab IDs:
+#   assets          — Generated outputs & images (ComfyUI built-in)
+#   workflows       — Saved workflows (ComfyUI built-in)
+#   node-library    — Node browser (ComfyUI built-in)
+#   model-library   — Model browser (ComfyUI built-in)
+#   job-history     — Execution queue & history (ComfyUI built-in)
+#   <extension-id>  — Any tab registered by third-party extensions
+sidebar:
+  # Global list of tab IDs to hide for ALL non-admin users.
+  # These override permission rules. Admins always see all tabs.
+  # Use the Admin Panel → Sidebar tab for per-group control instead.
+  hidden_tabs: []
+  # Example: hide the built-in Assets and Workflows tabs for everyone:
+  # hidden_tabs:
+  #   - "assets"
+  #   - "workflows"
+
 # Server settings
 server:
   # Routes that don't require authentication

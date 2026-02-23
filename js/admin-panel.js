@@ -7,6 +7,7 @@
  */
 
 import { apiGet, apiPost, apiPut, apiDelete } from "./api.js";
+import { getRegisteredTabs } from "./tab-filter.js";
 
 const ADMIN_CSS = `
   .mu-admin {
@@ -411,7 +412,7 @@ async function _renderPermissions(content) {
           </div>
           <div class="mu-form-group">
             <label>Type</label>
-            <select id="mu-perm-type"><option value="node">Node</option><option value="model">Model</option><option value="feature">Feature</option></select>
+            <select id="mu-perm-type"><option value="node">Node</option><option value="model">Model</option><option value="feature">Feature</option><option value="sidebar">Sidebar</option></select>
           </div>
         </div>
         <div class="mu-form-row">
@@ -609,6 +610,195 @@ async function _renderStats(content) {
   }
 }
 
+// ── Sidebar Tab Manager ──
+
+/**
+ * Map well-known tab IDs to human-friendly names and descriptions.
+ */
+const _TAB_META = {
+  "assets":            { label: "Assets",           desc: "Generated outputs & images" },
+  "node-library":      { label: "Node Library",     desc: "Browse available nodes" },
+  "model-library":     { label: "Model Library",    desc: "Browse available models" },
+  "workflows":         { label: "Workflows",        desc: "Saved workflows (ComfyUI built-in)" },
+  "job-history":       { label: "Job History",      desc: "Execution queue & history" },
+  "multiuser-profile": { label: "MultiUser",        desc: "User profile (this extension)" },
+  "multiuser-gallery": { label: "My Outputs",       desc: "Personal output gallery" },
+  "multiuser-admin":   { label: "Admin",            desc: "Admin panel (this extension)" },
+  "multiuser-all-outputs": { label: "All Outputs",  desc: "All users' outputs (admin)" },
+};
+
+function _tabLabel(tab) {
+  return _TAB_META[tab.id]?.label || tab.title || tab.id;
+}
+
+function _tabDesc(tab) {
+  return _TAB_META[tab.id]?.desc || "";
+}
+
+async function _renderSidebarManager(content) {
+  content.innerHTML = '<div class="mu-empty-state">Loading...</div>';
+  try {
+    // Fetch groups and existing sidebar deny rules
+    const [groupsRes, permsRes] = await Promise.all([apiGet("/groups"), apiGet("/permissions")]);
+    const groups = (await groupsRes.json()).groups || [];
+    const allPerms = (await permsRes.json()).permissions || [];
+    const sidebarPerms = allPerms.filter(p => p.resource_type === "sidebar");
+
+    // Get currently registered sidebar tabs from the frontend
+    const registeredTabs = getRegisteredTabs();
+
+    // Also include any tab IDs mentioned in existing deny rules but not currently registered
+    const knownIds = new Set(registeredTabs.map(t => t.id));
+    for (const p of sidebarPerms) {
+      if (!p.resource_pattern.includes("*") && !knownIds.has(p.resource_pattern)) {
+        registeredTabs.push({ id: p.resource_pattern, title: p.resource_pattern, icon: null });
+        knownIds.add(p.resource_pattern);
+      }
+    }
+
+    // Build lookup: { groupId: Set<tabId> } for denied tabs
+    const denyMap = {};
+    for (const p of sidebarPerms) {
+      if (p.action === "deny") {
+        if (!denyMap[p.group_id]) denyMap[p.group_id] = new Set();
+        denyMap[p.group_id].add(p.resource_pattern);
+      }
+    }
+
+    // Build lookup: permId by (group_id, pattern)
+    const permIdMap = {};
+    for (const p of sidebarPerms) {
+      permIdMap[`${p.group_id}:${p.resource_pattern}`] = p.id;
+    }
+
+    // Non-admin groups only (admins see everything regardless)
+    const nonAdminGroups = groups.filter(g => g.name !== "admin");
+
+    content.innerHTML = `
+      <div class="mu-section-header">
+        <h3>Sidebar Tab Visibility</h3>
+      </div>
+      <p style="color:#888;font-size:11px;margin:0 0 6px 0;">
+        Control which sidebar tabs are visible for each group.<br>
+        Admins always see all tabs. Toggle switches to <strong>hide</strong> a tab from that group.
+      </p>
+      ${registeredTabs.length === 0
+        ? '<div class="mu-empty-state">No sidebar tabs detected.<br>Tabs appear after the UI fully loads.</div>'
+        : `
+          <table class="mu-admin-table" id="mu-sidebar-table">
+            <thead>
+              <tr>
+                <th>Tab</th>
+                ${nonAdminGroups.map(g => `<th style="text-align:center;font-size:9px;">${g.name}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${registeredTabs.map(tab => `
+                <tr>
+                  <td>
+                    <strong>${_tabLabel(tab)}</strong>
+                    <div style="color:#888;font-size:10px;">${_tabDesc(tab)}</div>
+                    <code style="background:var(--comfy-input-bg,#222);padding:1px 4px;border-radius:3px;font-size:10px;color:#aaa;">${tab.id}</code>
+                  </td>
+                  ${nonAdminGroups.map(g => {
+                    const isDenied = denyMap[g.id]?.has(tab.id) || false;
+                    return `
+                      <td style="text-align:center;vertical-align:middle;">
+                        <label style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;font-size:10px;">
+                          <input type="checkbox"
+                                 class="mu-sidebar-toggle"
+                                 data-tab-id="${tab.id}"
+                                 data-group-id="${g.id}"
+                                 ${isDenied ? "checked" : ""} />
+                          <span style="color:${isDenied ? '#ff6b6b' : '#6bff8b'};font-weight:600;">
+                            ${isDenied ? 'Hidden' : 'Visible'}
+                          </span>
+                        </label>
+                      </td>`;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="margin-top:8px;">
+            <button class="mu-btn mu-btn-primary mu-btn-sm" id="mu-sidebar-add-custom">+ Hide Custom Tab ID</button>
+          </div>
+        `}
+    `;
+
+    // Bind toggle handlers
+    content.querySelectorAll(".mu-sidebar-toggle").forEach(cb => {
+      cb.addEventListener("change", async (e) => {
+        const tabId = cb.dataset.tabId;
+        const groupId = parseInt(cb.dataset.groupId);
+        const shouldHide = cb.checked;
+        const key = `${groupId}:${tabId}`;
+
+        if (shouldHide) {
+          // Create deny rule
+          const res = await apiPost("/permissions", {
+            group_id: groupId,
+            resource_type: "sidebar",
+            resource_pattern: tabId,
+            action: "deny",
+            priority: 0,
+          });
+          if (res.ok) {
+            _toast("success", `Hidden '${_tabLabel({id: tabId})}' for group`);
+          } else {
+            const d = await res.json();
+            _toast("error", d.error || "Error creating rule");
+            cb.checked = !shouldHide;
+          }
+        } else {
+          // Remove deny rule
+          const permId = permIdMap[key];
+          if (permId) {
+            await apiDelete(`/permissions/${permId}`);
+            _toast("success", `Showing '${_tabLabel({id: tabId})}' for group`);
+          }
+        }
+
+        // Refresh to update state
+        _renderSidebarManager(content);
+      });
+    });
+
+    // Custom tab ID button
+    content.querySelector("#mu-sidebar-add-custom")?.addEventListener("click", () => {
+      const tabId = prompt("Enter the sidebar tab ID to hide (e.g., 'assets', 'workflows'):");
+      if (!tabId || !tabId.trim()) return;
+      const groupChoice = prompt(
+        `Which group should this be hidden from?\n${nonAdminGroups.map((g, i) => `${i + 1}. ${g.name}`).join('\n')}\nEnter number:`
+      );
+      const idx = parseInt(groupChoice) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= nonAdminGroups.length) {
+        _toast("warn", "Invalid group selection");
+        return;
+      }
+      const group = nonAdminGroups[idx];
+
+      apiPost("/permissions", {
+        group_id: group.id,
+        resource_type: "sidebar",
+        resource_pattern: tabId.trim(),
+        action: "deny",
+        priority: 0,
+      }).then(res => {
+        if (res.ok) {
+          _toast("success", `Will hide '${tabId.trim()}' for ${group.name}`);
+          _renderSidebarManager(content);
+        } else {
+          res.json().then(d => _toast("error", d.error || "Error"));
+        }
+      });
+    });
+
+  } catch (e) {
+    _renderAuthError(content, e);
+  }
+}
+
 // ── Tab Switching ──
 
 function _switchTab(container, tab) {
@@ -625,6 +815,7 @@ function _switchTab(container, tab) {
     case "groups":      _renderGroups(content); break;
     case "permissions": _renderPermissions(content); break;
     case "tokens":      _renderExtTokens(content); break;
+    case "sidebar":     _renderSidebarManager(content); break;
     case "stats":       _renderStats(content); break;
   }
 }
@@ -662,6 +853,7 @@ export function renderAdminSidebar(el) {
       <div class="mu-admin-tab" data-tab="groups">Groups</div>
       <div class="mu-admin-tab" data-tab="permissions">Perms</div>
       <div class="mu-admin-tab" data-tab="tokens">Tokens</div>
+      <div class="mu-admin-tab" data-tab="sidebar">Sidebar</div>
       <div class="mu-admin-tab" data-tab="stats">Stats</div>
     </div>
     <div class="mu-admin-content"></div>
