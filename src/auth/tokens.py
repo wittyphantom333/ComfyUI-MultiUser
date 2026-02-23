@@ -19,7 +19,7 @@ def create_jwt(user_id: int, username: str, is_admin: bool = False) -> str:
     expiry_hours = get_config("auth", "session_lifetime_hours", default=24)
 
     payload = {
-        "sub": user_id,
+        "sub": str(user_id),  # RFC 7519 requires sub to be a string
         "username": username,
         "is_admin": is_admin,
         "iat": int(time.time()),
@@ -49,11 +49,19 @@ def verify_jwt_detailed(token: str) -> Tuple[Optional[dict[str, Any]], str]:
     logger.debug("Verifying JWT, token prefix=%s, secret prefix=%s",
                  token[:20] if token else "NONE", secret[:8] if secret else "NONE")
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        # Disable strict sub validation so we accept both legacy int-sub
+        # tokens and new string-sub tokens during the transition period.
+        payload = jwt.decode(token, secret, algorithms=["HS256"],
+                             options={"verify_sub": False})
         if payload.get("type") != "session":
             reason = f"wrong token type: {payload.get('type')}"
             logger.warning("JWT valid but type=%s (expected 'session')", payload.get("type"))
             return None, reason
+        # Normalize sub to int for DB queries (handles both str and legacy int tokens)
+        try:
+            payload["sub"] = int(payload["sub"])
+        except (ValueError, TypeError):
+            return None, f"invalid sub claim: {payload.get('sub')}"
         logger.debug("JWT verified OK for user %s (id=%s)", payload.get("username"), payload.get("sub"))
         return payload, "ok"
     except jwt.ExpiredSignatureError:
