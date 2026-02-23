@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import shutil
+import struct
 import subprocess
 import time
 from pathlib import Path
@@ -137,43 +138,102 @@ def _file_info(path: Path, output_dir: Path) -> dict:
 
 
 # Sampler node class_type substrings that indicate actual generation data.
-# Matches Majoor's _graph_has_sampler logic: KSampler*, SamplerCustom*, etc.
-_SAMPLER_MARKERS = (b"KSampler", b"ksampler", b"SamplerCustom", b"samplercustom")
+_SAMPLER_KEYWORDS = ("KSampler", "ksampler", "SamplerCustom", "samplercustom")
+
+
+def _extract_png_chunk(data: bytes, keyword: str) -> bytes | None:
+    """Extract the raw text content of a PNG tEXt or iTXt chunk by keyword.
+
+    PNG structure: 8-byte signature, then chunks of:
+      4 bytes  data length (big-endian uint32)
+      4 bytes  chunk type (ASCII)
+      N bytes  chunk data
+      4 bytes  CRC
+    For tEXt: data = keyword + \x00 + text
+    For iTXt: data = keyword + \x00 + compression_flag + method + \x00lang\x00translated\x00 + text
+    """
+    kw_bytes = keyword.encode("latin-1")
+    pos = 8  # skip PNG signature
+    end = len(data)
+    while pos + 8 <= end:
+        chunk_len = struct.unpack(">I", data[pos:pos + 4])[0]
+        chunk_type = data[pos + 4:pos + 8]
+        chunk_data_start = pos + 8
+        chunk_data_end = chunk_data_start + chunk_len
+        if chunk_data_end > end:
+            break
+
+        if chunk_type == b"tEXt":
+            chunk_data = data[chunk_data_start:chunk_data_end]
+            sep = chunk_data.find(b"\x00")
+            if sep >= 0 and chunk_data[:sep] == kw_bytes:
+                return chunk_data[sep + 1:]
+
+        elif chunk_type == b"iTXt":
+            chunk_data = data[chunk_data_start:chunk_data_end]
+            sep = chunk_data.find(b"\x00")
+            if sep >= 0 and chunk_data[:sep] == kw_bytes:
+                # Skip compression_flag(1) + method(1) + lang\x00 + translated\x00
+                rest = chunk_data[sep + 1:]
+                # Skip 2 bytes (compression flag + method), then two null-delimited strings
+                if len(rest) >= 2:
+                    p = 2
+                    for _ in range(2):
+                        nul = rest.find(b"\x00", p)
+                        if nul < 0:
+                            break
+                        p = nul + 1
+                    return rest[p:]
+
+        elif chunk_type == b"IEND":
+            break
+
+        # Advance to next chunk: length + type(4) + data(chunk_len) + CRC(4)
+        pos = chunk_data_end + 4
+    return None
+
+
+def _prompt_chunk_has_sampler(data: bytes) -> bool:
+    """Check if PNG binary has a 'prompt' chunk containing a sampler node.
+
+    Only inspects the 'prompt' chunk (the executed node graph), NOT the
+    'workflow' chunk (which includes all nodes, even disconnected ones).
+    """
+    prompt_bytes = _extract_png_chunk(data, "prompt")
+    if not prompt_bytes:
+        return False
+    # Search for sampler class_type within the prompt chunk only
+    for kw in _SAMPLER_KEYWORDS:
+        if kw.encode("utf-8") in prompt_bytes:
+            return True
+    return False
 
 
 def _has_generation_data(path: Path) -> bool:
     """Check whether a file contains actual *generation* data (sampler, seed, etc).
 
     Matches the Majoor Assets Manager convention:
-      '+' = the embedded prompt/workflow contains a sampler node, meaning
+      '+' = the embedded prompt graph contains a sampler node, meaning
             the file was produced by a generation workflow (txt2img, img2img).
       no '+' = no metadata at all, or metadata without sampling (e.g. a
                pure compositing/utility workflow, or a manually saved image).
 
-    Detection approach (fast binary scan, no JSON parsing):
-      - PNG: check for tEXt/iTXt 'prompt' chunk AND a sampler class_type string
-      - Video: check VHS sidecar PNG the same way
-      - WebP/JPEG: check EXIF for prompt JSON starting with '{'
+    Key distinction: only the 'prompt' chunk (executed nodes) is checked,
+    NOT the 'workflow' chunk (all nodes including disconnected ones).
     """
     ext = path.suffix.lower()
     try:
         if ext == ".png":
             with open(path, "rb") as fh:
-                data = fh.read(262144)  # 256KB covers most prompt chunks
-            has_prompt = b"tEXtprompt\x00" in data or b"iTXtprompt\x00" in data
-            if not has_prompt:
-                return False
-            # Has prompt metadata — now check if it contains a sampler node
-            return any(marker in data for marker in _SAMPLER_MARKERS)
+                data = fh.read(524288)  # 512KB covers large prompt graphs
+            return _prompt_chunk_has_sampler(data)
 
         if ext in VIDEO_EXTS:
             sidecar = path.with_suffix(".png")
             if sidecar.exists() and sidecar.is_file():
                 with open(sidecar, "rb") as fh:
-                    sdata = fh.read(262144)
-                has_prompt = b"tEXtprompt\x00" in sdata or b"iTXtprompt\x00" in sdata
-                if has_prompt:
-                    return any(marker in sdata for marker in _SAMPLER_MARKERS)
+                    sdata = fh.read(524288)
+                return _prompt_chunk_has_sampler(sdata)
             return False
 
         if ext == ".webp" and _HAS_PIL:
@@ -183,8 +243,7 @@ def _has_generation_data(path: Path) -> bool:
             if exif:
                 val = exif.get(0x0110, "")
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    # Check for sampler in the prompt JSON string
-                    return any(m.decode() in val for m in _SAMPLER_MARKERS)
+                    return any(kw in val for kw in _SAMPLER_KEYWORDS)
             return False
 
         if ext in (".jpg", ".jpeg") and _HAS_PIL:
@@ -194,7 +253,7 @@ def _has_generation_data(path: Path) -> bool:
             if exif:
                 val = exif.get(0x9286, "")  # UserComment
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    return any(m.decode() in val for m in _SAMPLER_MARKERS)
+                    return any(kw in val for kw in _SAMPLER_KEYWORDS)
             return False
     except Exception:
         pass
