@@ -17,7 +17,6 @@ import logging
 import math
 import os
 import shutil
-import struct
 import subprocess
 import time
 from pathlib import Path
@@ -141,119 +140,82 @@ def _file_info(path: Path, output_dir: Path) -> dict:
 _SAMPLER_KEYWORDS = ("KSampler", "ksampler", "SamplerCustom", "samplercustom")
 
 
-def _extract_png_chunk(data: bytes, keyword: str) -> bytes | None:
-    """Extract the raw text content of a PNG tEXt or iTXt chunk by keyword.
+def _prompt_has_sampler(prompt_text: str) -> bool:
+    """Check if a prompt JSON string references a sampler class_type.
 
-    PNG structure: 8-byte signature, then chunks of:
-      4 bytes  data length (big-endian uint32)
-      4 bytes  chunk type (ASCII)
-      N bytes  chunk data
-      4 bytes  CRC
-    For tEXt: data = keyword + \x00 + text
-    For iTXt: data = keyword + \x00 + compression_flag + method + \x00lang\x00translated\x00 + text
+    The prompt graph is a dict of node_id → {class_type, inputs, ...}.
+    A sampler node means actual image generation occurred.
+    We first try JSON parsing for accuracy, then fall back to string search.
     """
-    kw_bytes = keyword.encode("latin-1")
-    pos = 8  # skip PNG signature
-    end = len(data)
-    while pos + 8 <= end:
-        chunk_len = struct.unpack(">I", data[pos:pos + 4])[0]
-        chunk_type = data[pos + 4:pos + 8]
-        chunk_data_start = pos + 8
-        chunk_data_end = chunk_data_start + chunk_len
-        if chunk_data_end > end:
-            break
-
-        if chunk_type == b"tEXt":
-            chunk_data = data[chunk_data_start:chunk_data_end]
-            sep = chunk_data.find(b"\x00")
-            if sep >= 0 and chunk_data[:sep] == kw_bytes:
-                return chunk_data[sep + 1:]
-
-        elif chunk_type == b"iTXt":
-            chunk_data = data[chunk_data_start:chunk_data_end]
-            sep = chunk_data.find(b"\x00")
-            if sep >= 0 and chunk_data[:sep] == kw_bytes:
-                # Skip compression_flag(1) + method(1) + lang\x00 + translated\x00
-                rest = chunk_data[sep + 1:]
-                # Skip 2 bytes (compression flag + method), then two null-delimited strings
-                if len(rest) >= 2:
-                    p = 2
-                    for _ in range(2):
-                        nul = rest.find(b"\x00", p)
-                        if nul < 0:
-                            break
-                        p = nul + 1
-                    return rest[p:]
-
-        elif chunk_type == b"IEND":
-            break
-
-        # Advance to next chunk: length + type(4) + data(chunk_len) + CRC(4)
-        pos = chunk_data_end + 4
-    return None
-
-
-def _prompt_chunk_has_sampler(data: bytes) -> bool:
-    """Check if PNG binary has a 'prompt' chunk containing a sampler node.
-
-    Only inspects the 'prompt' chunk (the executed node graph), NOT the
-    'workflow' chunk (which includes all nodes, even disconnected ones).
-    """
-    prompt_bytes = _extract_png_chunk(data, "prompt")
-    if not prompt_bytes:
+    # Fast string check first
+    has_any = any(kw in prompt_text for kw in _SAMPLER_KEYWORDS)
+    if not has_any:
         return False
-    # Search for sampler class_type within the prompt chunk only
-    for kw in _SAMPLER_KEYWORDS:
-        if kw.encode("utf-8") in prompt_bytes:
-            return True
-    return False
+
+    # Verify via JSON parse: check class_type values specifically
+    # (avoids false positives from sampler keywords in text prompts)
+    try:
+        graph = json.loads(prompt_text)
+        if isinstance(graph, dict):
+            for node in graph.values():
+                if isinstance(node, dict):
+                    ct = str(node.get("class_type", "")).lower()
+                    if "ksampler" in ct or "samplercustom" in ct:
+                        if "select" not in ct:  # exclude selector nodes
+                            return True
+        return False
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        # JSON parse failed — rely on string match
+        return True
 
 
 def _has_generation_data(path: Path) -> bool:
-    """Check whether a file contains actual *generation* data (sampler, seed, etc).
+    """Check whether a file contains actual *generation* data (sampler node).
 
     Matches the Majoor Assets Manager convention:
-      '+' = the embedded prompt graph contains a sampler node, meaning
-            the file was produced by a generation workflow (txt2img, img2img).
-      no '+' = no metadata at all, or metadata without sampling (e.g. a
-               pure compositing/utility workflow, or a manually saved image).
+      '+' = the executed prompt graph contains a sampler node (KSampler, etc.),
+            meaning the file was produced by a generation workflow.
+      no '+' = no prompt metadata, or a workflow without sampling (upscale,
+               compositing, utility, or non-ComfyUI image).
 
-    Key distinction: only the 'prompt' chunk (executed nodes) is checked,
-    NOT the 'workflow' chunk (all nodes including disconnected ones).
+    Uses PIL to properly read PNG text chunks (which live AFTER the image
+    data and may be compressed), avoiding the brittle binary scanning approach.
     """
     ext = path.suffix.lower()
     try:
-        if ext == ".png":
-            with open(path, "rb") as fh:
-                data = fh.read(524288)  # 512KB covers large prompt graphs
-            return _prompt_chunk_has_sampler(data)
+        if ext == ".png" and _HAS_PIL:
+            img = Image.open(path)
+            prompt_text = (img.info or {}).get("prompt", "")
+            if not prompt_text:
+                return False
+            return _prompt_has_sampler(prompt_text)
 
         if ext in VIDEO_EXTS:
+            # VHS sidecar PNG
             sidecar = path.with_suffix(".png")
-            if sidecar.exists() and sidecar.is_file():
-                with open(sidecar, "rb") as fh:
-                    sdata = fh.read(524288)
-                return _prompt_chunk_has_sampler(sdata)
+            if sidecar.exists() and sidecar.is_file() and _HAS_PIL:
+                img = Image.open(sidecar)
+                prompt_text = (img.info or {}).get("prompt", "")
+                if prompt_text:
+                    return _prompt_has_sampler(prompt_text)
             return False
 
         if ext == ".webp" and _HAS_PIL:
-            from PIL import Image as _PILImage
-            img = _PILImage.open(path)
+            img = Image.open(path)
             exif = img.getexif()
             if exif:
                 val = exif.get(0x0110, "")
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    return any(kw in val for kw in _SAMPLER_KEYWORDS)
+                    return _prompt_has_sampler(val)
             return False
 
         if ext in (".jpg", ".jpeg") and _HAS_PIL:
-            from PIL import Image as _PILImage
-            img = _PILImage.open(path)
+            img = Image.open(path)
             exif = img.getexif()
             if exif:
                 val = exif.get(0x9286, "")  # UserComment
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    return any(kw in val for kw in _SAMPLER_KEYWORDS)
+                    return _prompt_has_sampler(val)
             return False
     except Exception:
         pass

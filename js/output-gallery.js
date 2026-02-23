@@ -96,15 +96,34 @@ const CSS = `
 }
 .mu-badge-fmt{
   top:4px;right:4px;
-  color:#bbc;background:rgba(0,0,0,.75);
-  border:1px solid rgba(255,255,255,.15);
-  text-shadow:0 1px 2px rgba(0,0,0,.8);
+  text-shadow:0 1px 2px rgba(0,0,0,.9);
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(0,0,0,.7);
+  color:#aab;
 }
-.mu-badge-fmt.has-meta{
-  color:#2d2d2d;background:rgba(100,220,130,.88);
-  border-color:rgba(100,220,130,.5);
-  text-shadow:none;
-}
+/* Per-format colors (non-'+' = muted, '+' = vibrant) */
+.mu-badge-fmt[data-fmt="PNG"]{color:#66bb6a;border-color:rgba(102,187,106,.3)}
+.mu-badge-fmt[data-fmt="JPG"],.mu-badge-fmt[data-fmt="JPEG"]{color:#ffa726;border-color:rgba(255,167,38,.3)}
+.mu-badge-fmt[data-fmt="WEBP"]{color:#42a5f5;border-color:rgba(66,165,245,.3)}
+.mu-badge-fmt[data-fmt="GIF"]{color:#ab47bc;border-color:rgba(171,71,188,.3)}
+.mu-badge-fmt[data-fmt="MP4"]{color:#ef5350;border-color:rgba(239,83,80,.3)}
+.mu-badge-fmt[data-fmt="WEBM"]{color:#ec407a;border-color:rgba(236,64,122,.3)}
+.mu-badge-fmt[data-fmt="MOV"]{color:#ff7043;border-color:rgba(255,112,67,.3)}
+.mu-badge-fmt[data-fmt="MKV"]{color:#8d6e63;border-color:rgba(141,110,99,.3)}
+.mu-badge-fmt[data-fmt="AVI"]{color:#78909c;border-color:rgba(120,144,156,.3)}
+.mu-badge-fmt[data-fmt="BMP"]{color:#9e9e9e;border-color:rgba(158,158,158,.3)}
+.mu-badge-fmt[data-fmt="TIFF"]{color:#a1887f;border-color:rgba(161,136,127,.3)}
+/* '+' variants — brighter and bolder background */
+.mu-badge-fmt.has-meta{text-shadow:none;font-weight:800}
+.mu-badge-fmt.has-meta[data-fmt="PNG"]{color:#fff;background:rgba(76,175,80,.85);border-color:rgba(76,175,80,.6)}
+.mu-badge-fmt.has-meta[data-fmt="JPG"],.mu-badge-fmt.has-meta[data-fmt="JPEG"]{color:#fff;background:rgba(245,124,0,.85);border-color:rgba(245,124,0,.6)}
+.mu-badge-fmt.has-meta[data-fmt="WEBP"]{color:#fff;background:rgba(30,136,229,.85);border-color:rgba(30,136,229,.6)}
+.mu-badge-fmt.has-meta[data-fmt="GIF"]{color:#fff;background:rgba(156,39,176,.85);border-color:rgba(156,39,176,.6)}
+.mu-badge-fmt.has-meta[data-fmt="MP4"]{color:#fff;background:rgba(229,57,53,.85);border-color:rgba(229,57,53,.6)}
+.mu-badge-fmt.has-meta[data-fmt="WEBM"]{color:#fff;background:rgba(216,27,96,.85);border-color:rgba(216,27,96,.6)}
+.mu-badge-fmt.has-meta[data-fmt="MOV"]{color:#fff;background:rgba(244,81,30,.85);border-color:rgba(244,81,30,.6)}
+.mu-badge-fmt.has-meta[data-fmt="MKV"]{color:#fff;background:rgba(109,76,65,.85);border-color:rgba(109,76,65,.6)}
+.mu-badge-fmt.has-meta[data-fmt="AVI"]{color:#fff;background:rgba(84,110,122,.85);border-color:rgba(84,110,122,.6)}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
@@ -506,6 +525,7 @@ function _renderGrid(grid) {
       const fmt = f.format || f.filename.split(".").pop().toUpperCase();
       const label = f.has_meta ? fmt + "+" : fmt;
       const b = _mk("div","mu-badge mu-badge-fmt" + (f.has_meta ? " has-meta" : ""));
+      b.setAttribute("data-fmt", fmt);
       b.textContent = label;
       item.appendChild(b);
     }
