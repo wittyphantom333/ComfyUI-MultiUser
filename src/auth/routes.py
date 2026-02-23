@@ -426,7 +426,7 @@ def setup_auth_routes(routes):
         db = await get_db()
         tokens = await db.fetchall(
             """SELECT id, name, prefix, is_active, expires_at, created_at, last_used_at
-               FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC""",
+               FROM api_tokens WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC""",
             (user["id"],)
         )
         return web.json_response({"tokens": tokens})
