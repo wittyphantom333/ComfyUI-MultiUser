@@ -113,8 +113,13 @@ const CSS = `
 .mu-badge-fmt[data-fmt="AVI"]{color:#78909c;border-color:rgba(120,144,156,.3)}
 .mu-badge-fmt[data-fmt="BMP"]{color:#9e9e9e;border-color:rgba(158,158,158,.3)}
 .mu-badge-fmt[data-fmt="TIFF"]{color:#a1887f;border-color:rgba(161,136,127,.3)}
-/* Collision "+" badge highlight */
-.mu-badge-fmt.collision{border-color:rgba(255,183,77,.5);text-shadow:0 1px 2px rgba(255,183,77,.35)}
+/* Collision "+" badge highlight — overrides per-format colors */
+.mu-badge-fmt.collision{
+  color:#ffb74d !important;
+  border-color:rgba(255,183,77,.6) !important;
+  background:rgba(60,40,0,.85);
+  text-shadow:0 0 6px rgba(255,183,77,.5);
+}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
