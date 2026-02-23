@@ -235,8 +235,8 @@ def _hook_prompt_via_middleware():
         if _main_loop is None or _main_loop.is_closed():
             _main_loop = asyncio.get_running_loop()
 
-        # Only intercept POST /prompt
-        if request.method == "POST" and request.path == "/prompt":
+        # Only intercept POST /prompt (or /api/prompt)
+        if request.method == "POST" and request.path in ("/prompt", "/api/prompt"):
             user = request.get("multiuser_user")
 
             if user and get_config("generations", "enabled", default=True):

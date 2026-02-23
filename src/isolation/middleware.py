@@ -15,6 +15,11 @@ from ..config import get_config
 
 logger = logging.getLogger("comfyui-multiuser.isolation")
 
+# ComfyUI may serve routes at /prompt or /api/prompt depending on version.
+_PROMPT_PATHS = ("/prompt", "/prompt/", "/api/prompt", "/api/prompt/")
+_HISTORY_PREFIXES = ("/history", "/api/history")
+_VIEW_PATHS = ("/view", "/api/view")
+
 
 def _is_enabled(key: str) -> bool:
     return bool(get_config("isolation", key, default=True))
@@ -43,44 +48,43 @@ def install_isolation_middleware(app: web.Application) -> None:
         # Tag the prompt_server with the current username so the
         # on_prompt_handler (registered in __init__.py) can rewrite
         # filename_prefix before ComfyUI queues the prompt.
-        if request.method == "POST" and "prompt" in request.path:
-            print(
-                f"[ISOLATION MW DEBUG] path={request.path!r} "
-                f"user={user.get('username') if user else None} "
-                f"per_user={_is_enabled('per_user_outputs')}"
-            )
         if (
             request.method == "POST"
-            and request.path in ("/prompt", "/prompt/")
+            and request.path in _PROMPT_PATHS
             and user
             and _is_enabled("per_user_outputs")
         ):
             username = user["username"]
             ps = comfyui_server.PromptServer.instance
             ps._mu_prompt_user = username
-            print(f"[ISOLATION MW] POST /prompt — tagged user={username}")
+            print(f"[ISOLATION MW] POST {request.path} — tagged user={username}")
             logger.info("Isolation: tagged prompt user=%s on PromptServer", username)
 
         # ── 2. Restrict /history to user's own prompts ──
         if (
             request.method == "GET"
-            and (request.path in ("/history", "/history/")
-                 or request.path.startswith("/history/"))
+            and any(
+                request.path == p or request.path.startswith(p + "/")
+                for p in _HISTORY_PREFIXES
+            )
             and user
             and not user.get("is_admin")
             and _is_enabled("restrict_history_access")
         ):
-            # Single-prompt variant: /history/{prompt_id}
+            # Single-prompt variant: /history/{prompt_id} or /api/history/{id}
             parts = request.path.rstrip("/").split("/")
-            if len(parts) == 3 and parts[2]:
+            # parts for /history/xxx = ["", "history", xxx]
+            # parts for /api/history/xxx = ["", "api", "history", xxx]
+            prompt_id = parts[-1] if parts[-1] not in ("history", "api", "") else None
+            if prompt_id:
                 return await _filter_history_single(
-                    request, handler, user, parts[2]
+                    request, handler, user, prompt_id
                 )
             return await _filter_history(request, handler, user)
 
         # ── 3. Restrict /view to user's own output subfolder ──
         if (
-            request.path == "/view"
+            request.path in _VIEW_PATHS
             and request.method == "GET"
             and user
             and not user.get("is_admin")
