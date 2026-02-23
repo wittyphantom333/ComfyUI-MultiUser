@@ -25,6 +25,18 @@ def install_isolation_middleware(app: web.Application) -> None:
     async def isolation_middleware(request: web.Request, handler):
         user = request.get("multiuser_user")
 
+        # ── 0. Block third-party asset-manager routes that bypass isolation ──
+        if (
+            request.path.startswith("/mjr/")
+            and user
+            and not user.get("is_admin")
+            and _is_enabled("restrict_output_access")
+        ):
+            return web.json_response(
+                {"error": "Use the built-in output browser. Third-party asset managers are restricted."},
+                status=403,
+            )
+
         # ── 1. Per-user output directory (rewrite SaveImage in /prompt) ──
         if (
             request.method == "POST"
