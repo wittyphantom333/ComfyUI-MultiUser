@@ -204,6 +204,30 @@ function _toast(severity, msg) {
   });
 }
 
+/** Render a friendly auth error instead of raw error message. */
+function _renderAuthError(content, e) {
+  const isAuthError = e.message && (
+    e.message.includes("Not authenticated") ||
+    e.message.includes("Authentication required") ||
+    e.message.includes("401")
+  );
+  if (isAuthError) {
+    content.innerHTML = `
+      <div class="mu-empty-state" style="text-align:center;padding:32px;">
+        <div style="font-size:32px;margin-bottom:12px;">🔒</div>
+        <div style="color:#ff6b6b;font-size:14px;margin-bottom:8px;">Session expired or invalid</div>
+        <div style="color:#888;font-size:12px;margin-bottom:16px;">
+          The server rejected your authentication token.<br>
+          Try signing out and back in, or refresh the page.
+        </div>
+        <button class="mu-btn mu-btn-primary mu-btn-sm" onclick="location.reload()">Refresh Page</button>
+      </div>
+    `;
+  } else {
+    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+  }
+}
+
 // ── Tab Renderers ──
 
 async function _renderUsers(content) {
@@ -256,7 +280,7 @@ async function _renderUsers(content) {
       btn.addEventListener("click", () => _editUser(btn.dataset.uid, content));
     });
   } catch (e) {
-    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+    _renderAuthError(content, e);
   }
 }
 
@@ -328,7 +352,7 @@ async function _renderGroups(content) {
       btn.addEventListener("click", () => _editGroup(btn.dataset.gid, content));
     });
   } catch (e) {
-    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+    _renderAuthError(content, e);
   }
 }
 
@@ -457,7 +481,7 @@ async function _renderPermissions(content) {
       });
     });
   } catch (e) {
-    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+    _renderAuthError(content, e);
   }
 }
 
@@ -541,7 +565,7 @@ async function _renderExtTokens(content) {
       });
     });
   } catch (e) {
-    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+    _renderAuthError(content, e);
   }
 }
 
@@ -581,7 +605,7 @@ async function _renderStats(content) {
       </div>
     `;
   } catch (e) {
-    content.innerHTML = `<div class="mu-empty-state" style="color:#ff6b6b;">Error: ${e.message}</div>`;
+    _renderAuthError(content, e);
   }
 }
 

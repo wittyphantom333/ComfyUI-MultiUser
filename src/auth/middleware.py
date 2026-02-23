@@ -45,6 +45,7 @@ AUTH_PUBLIC = {
     "/multiuser/health",
     "/multiuser/setup-status",
     "/multiuser/token-verify",
+    "/multiuser/debug-auth",
 }
 
 
@@ -210,11 +211,27 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
             else:
                 logger.debug("Auth via JS cookie for %s %s", request.method, request.path)
 
+    # 4. X-MultiUser-Token custom header — some proxies strip the standard
+    #    Authorization header but pass through custom X- headers.
+    if user is None:
+        custom_token = request.headers.get("X-MultiUser-Token", "")
+        if custom_token:
+            user = await _get_user_from_jwt(custom_token)
+            if user is None:
+                logger.debug("X-MultiUser-Token header JWT failed for %s", request.path)
+            else:
+                logger.debug("Auth via X-MultiUser-Token header for %s %s", request.method, request.path)
+
     if user is None:
         has_creds = bool(auth_header or request.cookies.get("multiuser_session")
-                         or request.cookies.get("multiuser_token"))
+                         or request.cookies.get("multiuser_token")
+                         or request.headers.get("X-MultiUser-Token"))
         if has_creds:
-            logger.warning("All auth methods failed for %s %s", request.method, request.path)
+            logger.warning("All auth methods failed for %s %s (auth_hdr=%s, session_cookie=%s, js_cookie=%s, x_header=%s)",
+                           request.method, request.path,
+                           bool(auth_header), bool(request.cookies.get("multiuser_session")),
+                           bool(request.cookies.get("multiuser_token")),
+                           bool(request.headers.get("X-MultiUser-Token")))
 
     return user
 

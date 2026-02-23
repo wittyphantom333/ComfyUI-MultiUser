@@ -96,6 +96,25 @@ app.registerExtension({
    */
   async init() {
     console.log("[MultiUser] init() — checking auth state");
+
+    // Run diagnostics first to help debug server-side issues
+    try {
+      const token = localStorage.getItem("multiuser_token") || "";
+      const diagRes = await fetch("/multiuser/debug-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (diagRes.ok) {
+        const diag = await diagRes.json();
+        console.log("[MultiUser] Server diagnostics:", JSON.stringify(diag));
+      } else {
+        console.warn("[MultiUser] debug-auth returned:", diagRes.status);
+      }
+    } catch (e) {
+      console.warn("[MultiUser] debug-auth unavailable:", e.message);
+    }
+
     let user = await getCurrentUser();
 
     if (!user) {
@@ -107,6 +126,39 @@ app.registerExtension({
       console.error("[MultiUser] Auth flow completed but no user — aborting");
       _authenticated = false;
       return;
+    }
+
+    // After login, verify the new token actually works for protected routes
+    // by doing a quick test call. If this fails, show a diagnostic warning.
+    try {
+      const testRes = await fetch("/multiuser/my-permissions", {
+        credentials: "include",
+        headers: {
+          "Accept": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("multiuser_token") || ""}`,
+          "X-MultiUser-Token": localStorage.getItem("multiuser_token") || "",
+        },
+      });
+      if (!testRes.ok) {
+        console.error("[MultiUser] Post-login token test FAILED:", testRes.status,
+                      "— Bearer/cookie/X-header all rejected by middleware");
+        // Run diagnostics again with the new token
+        try {
+          const newToken = localStorage.getItem("multiuser_token") || "";
+          const diagRes2 = await fetch("/multiuser/debug-auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: newToken }),
+          });
+          if (diagRes2.ok) {
+            console.error("[MultiUser] Post-login diagnostics:", JSON.stringify(await diagRes2.json()));
+          }
+        } catch {}
+      } else {
+        console.log("[MultiUser] Post-login token test OK — middleware accepting auth");
+      }
+    } catch (e) {
+      console.warn("[MultiUser] Post-login token test error:", e.message);
     }
 
     _authenticated = true;

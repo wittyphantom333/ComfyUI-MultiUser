@@ -289,7 +289,11 @@ def setup_auth_routes(routes):
             (payload["sub"],)
         )
         if user is None or not user["is_active"]:
-            return web.json_response({"error": "User not found or disabled"}, status=401)
+            return web.json_response(
+                {"error": "User not found or disabled",
+                 "reason": "user_not_found" if user is None else "user_disabled"},
+                status=401,
+            )
 
         # Get groups
         groups = await db.fetchall(
@@ -307,6 +311,84 @@ def setup_auth_routes(routes):
             "is_admin": bool(user["is_admin"]),
             "groups": [{"id": g["id"], "name": g["name"], "description": g["description"]} for g in groups],
         })
+
+    @routes.post("/multiuser/debug-auth")
+    async def debug_auth(request: web.Request):
+        """Diagnostic endpoint to debug authentication issues.
+
+        Public (no auth required). Accepts optional token in body to test.
+        Returns server config state and token verification details.
+        """
+        import os
+        from .tokens import verify_jwt_detailed
+        from ..config import get_config, get_base_dir
+
+        result = {}
+
+        # Config source info
+        secret = get_config("auth", "secret_key") or ""
+        result["secret_key_prefix"] = secret[:8] if secret else "NONE"
+        result["secret_key_length"] = len(secret)
+        result["env_var_set"] = bool(os.environ.get("MULTIUSER_SECRET_KEY"))
+        result["secret_file_exists"] = (get_base_dir() / "data" / ".secret_key").exists()
+        result["session_lifetime_hours"] = get_config("auth", "session_lifetime_hours", default=24)
+
+        # DB state
+        try:
+            db = await get_db()
+            user_count = await db.fetchval("SELECT COUNT(*) FROM users")
+            result["db_user_count"] = user_count
+            result["db_status"] = "ok"
+        except Exception as e:
+            result["db_status"] = f"error: {e}"
+            result["db_user_count"] = -1
+
+        # Test token if provided
+        try:
+            data = await request.json()
+            token = data.get("token", "")
+        except Exception:
+            token = ""
+
+        if token:
+            result["token_prefix"] = token[:20] + "..."
+            payload, reason = verify_jwt_detailed(token)
+            result["token_valid"] = payload is not None
+            result["token_reason"] = reason
+            if payload:
+                result["token_payload"] = {
+                    "sub": payload.get("sub"),
+                    "username": payload.get("username"),
+                    "is_admin": payload.get("is_admin"),
+                    "exp": payload.get("exp"),
+                    "iat": payload.get("iat"),
+                }
+                # Check if user exists in DB
+                if result["db_status"] == "ok":
+                    db = await get_db()
+                    user = await db.fetchone(
+                        "SELECT id, username, is_admin, is_active FROM users WHERE id = ?",
+                        (payload["sub"],)
+                    )
+                    result["user_in_db"] = user is not None
+                    if user:
+                        result["user_active"] = bool(user["is_active"])
+
+        # Request headers (sanitized)
+        result["headers_present"] = {
+            "authorization": "Authorization" in request.headers,
+            "cookie": "Cookie" in request.headers,
+            "x_multiuser_token": "X-MultiUser-Token" in request.headers,
+            "content_type": request.headers.get("Content-Type", ""),
+        }
+        if "Cookie" in request.headers:
+            cookies = request.cookies
+            result["cookies_present"] = {
+                "multiuser_session": "multiuser_session" in cookies,
+                "multiuser_token": "multiuser_token" in cookies,
+            }
+
+        return web.json_response(result)
 
     @routes.get("/multiuser/me")
     async def me(request: web.Request):

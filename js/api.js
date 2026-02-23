@@ -40,12 +40,14 @@ export function clearToken() {
   }
 })();
 
-/** Build headers, injecting Bearer token if one is stored. */
+/** Build headers, injecting token via multiple transport mechanisms. */
 export function authHeaders(extra = {}) {
   const headers = { "Accept": "application/json", ...extra };
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
+    // Custom header as fallback — some proxies strip Authorization but pass X- headers
+    headers["X-MultiUser-Token"] = token;
   }
   return headers;
 }
