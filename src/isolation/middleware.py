@@ -42,7 +42,6 @@ def install_isolation_middleware(app: web.Application) -> None:
             request.method == "POST"
             and request.path == "/prompt"
             and user
-            and not user.get("is_admin")
             and _is_enabled("per_user_outputs")
         ):
             return await _rewrite_prompt_outputs(request, handler, user)
