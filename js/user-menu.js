@@ -234,6 +234,9 @@ export function renderUserSidebar(el, user) {
 
   _injectStyles();
 
+  // Clear any previous content (ComfyUI may re-invoke render without clearing)
+  el.innerHTML = "";
+
   const container = document.createElement("div");
   container.className = "mu-sidebar";
 
