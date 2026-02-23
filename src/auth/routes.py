@@ -11,6 +11,25 @@ from ..db.factory import get_db
 logger = logging.getLogger("comfyui-multiuser.auth.routes")
 
 
+def _set_session_cookie(response: web.Response, token: str) -> None:
+    """Set the session cookie with proper attributes for both HTTP and HTTPS."""
+    secure = get_config("auth", "cookie_secure", default=True)
+    samesite = get_config("auth", "cookie_samesite", default="Lax")
+    response.set_cookie(
+        "multiuser_session", token,
+        path="/",
+        httponly=True,
+        secure=secure,
+        samesite=samesite,
+        max_age=get_config("auth", "session_lifetime_hours", default=24) * 3600,
+    )
+
+
+def _clear_session_cookie(response: web.Response) -> None:
+    """Clear the session cookie."""
+    response.del_cookie("multiuser_session", path="/")
+
+
 def setup_auth_routes(routes):
     """Register auth-related routes."""
 
@@ -122,12 +141,7 @@ def setup_auth_routes(routes):
                 "is_admin": bool(is_admin),
             }
         }, status=201)
-        response.set_cookie(
-            "multiuser_session", token,
-            httponly=True,
-            samesite="Lax",
-            max_age=get_config("auth", "token_expiry_hours", default=24) * 3600,
-        )
+        _set_session_cookie(response, token)
         return response
 
     @routes.post("/multiuser/login")
@@ -224,19 +238,14 @@ def setup_auth_routes(routes):
                 "is_admin": bool(user["is_admin"]),
             }
         })
-        response.set_cookie(
-            "multiuser_session", token,
-            httponly=True,
-            samesite="Lax",
-            max_age=get_config("auth", "token_expiry_hours", default=24) * 3600,
-        )
+        _set_session_cookie(response, token)
         return response
 
     @routes.post("/multiuser/logout")
     async def logout(request: web.Request):
         """Clear the session cookie."""
         response = web.json_response({"success": True})
-        response.del_cookie("multiuser_session")
+        _clear_session_cookie(response)
         return response
 
     @routes.get("/multiuser/me")

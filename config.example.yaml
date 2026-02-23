@@ -26,10 +26,16 @@ auth:
   secret_key: ""
   
   # JWT token expiry in hours
-  token_expiry_hours: 24
+  session_lifetime_hours: 24
   
   # API token expiry in days (0 = never expires)
   api_token_expiry_days: 0
+  
+  # Set to true when serving over HTTPS (adds Secure flag to cookies)
+  cookie_secure: true
+  
+  # SameSite cookie attribute: "Lax", "Strict", or "None"
+  cookie_samesite: "Lax"
   
   # Maximum failed login attempts before lockout
   max_login_attempts: 5
