@@ -20,7 +20,7 @@ from .src.tokens.routes import setup_ext_token_routes
 from .src.generations.routes import setup_generation_routes
 from .src.workflows.routes import setup_workflow_routes
 from .src.outputs.routes import setup_output_routes
-from .src.isolation.middleware import install_isolation_middleware
+from .src.isolation.middleware import install_isolation_middleware, current_prompt_user
 from .src.generations.tracker import (
     on_prompt_queued,
     on_prompt_started,
@@ -92,6 +92,62 @@ logger.info("MultiUser: all API routes registered")
 
 install_middleware(prompt_server.app)
 install_isolation_middleware(prompt_server.app)
+
+# ---------------------------------------------------------------------------
+# Prompt-queue monkey-patch: per-user output directories (PRIMARY mechanism)
+# ---------------------------------------------------------------------------
+
+def _patch_prompt_queue():
+    """Rewrite filename_prefix in prompts as they enter the execution queue.
+
+    This operates at the pure-Python-dict level — no request-body hacking —
+    so it works regardless of aiohttp version or body-caching quirks.
+    The isolation middleware sets *current_prompt_user* (a ContextVar) for
+    each /prompt POST; we read it here and prefix every filename_prefix.
+    """
+    try:
+        queue = prompt_server.prompt_queue
+        original_put = queue.put
+    except AttributeError:
+        logger.warning("MultiUser: prompt_queue not found — queue patch skipped")
+        return
+
+    def patched_put(item):
+        username = current_prompt_user.get(None)
+        if username and isinstance(item, (tuple, list)):
+            # item is typically (number, prompt_id, prompt, extra_data, outputs_to_execute)
+            # Find the prompt dict (a dict-of-dicts with 'class_type' keys)
+            for part in item:
+                if not isinstance(part, dict):
+                    continue
+                # Quick smoke-test: does any value look like a node?
+                is_prompt = any(
+                    isinstance(v, dict) and "class_type" in v
+                    for v in part.values()
+                )
+                if not is_prompt:
+                    continue
+                for _nid, node in part.items():
+                    if not isinstance(node, dict):
+                        continue
+                    inputs = node.get("inputs")
+                    if not isinstance(inputs, dict):
+                        continue
+                    if "filename_prefix" in inputs:
+                        pfx = inputs.get("filename_prefix", "ComfyUI")
+                        if isinstance(pfx, str) and not pfx.startswith(f"{username}/"):
+                            inputs["filename_prefix"] = f"{username}/{pfx}"
+                            print(
+                                f"[ISOLATION QUEUE] {_nid} filename_prefix → "
+                                f"'{inputs['filename_prefix']}' (user={username})"
+                            )
+                break  # only patch the first prompt-dict found
+        return original_put(item)
+
+    queue.put = patched_put
+    logger.info("MultiUser: prompt queue patched for per-user isolation")
+
+_patch_prompt_queue()
 
 # ---------------------------------------------------------------------------
 # Database initialisation (runs in background at startup)

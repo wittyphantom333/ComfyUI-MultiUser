@@ -6,6 +6,7 @@ Intercepts ComfyUI endpoints to:
   3. Filter /view (output image serving) to the user's own folder.
 """
 import asyncio
+import contextvars
 import json as json_mod
 import logging
 from aiohttp import web
@@ -13,6 +14,14 @@ from aiohttp import web
 from ..config import get_config
 
 logger = logging.getLogger("comfyui-multiuser.isolation")
+
+# ContextVar that carries the authenticated username for the current request.
+# The prompt-queue monkey-patch in __init__.py reads this to rewrite
+# filename_prefix at the Python-dict level — completely independent of
+# any aiohttp request-body patching.
+current_prompt_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "isolation_prompt_user", default=None
+)
 
 
 def _is_enabled(key: str) -> bool:
@@ -97,96 +106,44 @@ def install_isolation_middleware(app: web.Application) -> None:
 async def _rewrite_prompt_outputs(
     request: web.Request, handler, user: dict
 ) -> web.Response:
-    """Prefix SaveImage / PreviewImage output with the user's username."""
-    logger.info("Isolation: _rewrite_prompt_outputs called for user %s", user.get("username"))
+    """Tag the current async context with the username.
 
-    body = await request.read()
-    try:
-        data = json_mod.loads(body)
-    except (json_mod.JSONDecodeError, Exception):
-        logger.warning("Isolation: failed to parse prompt JSON body (%d bytes)", len(body))
-        return await handler(request)
-
-    prompt = data.get("prompt")
-    if not prompt or not isinstance(prompt, dict):
-        logger.warning("Isolation: no 'prompt' key in body. Keys: %s", list(data.keys()))
-        return await handler(request)
-
+    The actual filename_prefix rewriting happens in the PromptQueue
+    monkey-patch (see __init__.py) which reads *current_prompt_user*.
+    We also attempt a best-effort request-body rewrite so that the
+    prompt-tracking middleware records the rewritten prefix, but the
+    queue-level patch is the **primary** mechanism that guarantees
+    files land in per-user subdirectories.
+    """
     username = user["username"]
-    modified = False
 
-    for _node_id, node in prompt.items():
-        if not isinstance(node, dict):
-            continue
-        class_type = node.get("class_type", "")
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict):
-            continue
+    # ── PRIMARY: set ContextVar so the queue patch can pick it up ──
+    current_prompt_user.set(username)
+    print(f"[ISOLATION] Set prompt user context → {username}")
+    logger.info("Isolation: set current_prompt_user=%s", username)
 
-        # Match ANY node that writes files via filename_prefix.
-        if "filename_prefix" in inputs:
-            prefix = inputs.get("filename_prefix", "ComfyUI")
-            if isinstance(prefix, str) and not prefix.startswith(f"{username}/"):
-                inputs["filename_prefix"] = f"{username}/{prefix}"
-                modified = True
-                logger.info(
-                    "Isolation: rewrote node %s (%s) filename_prefix -> '%s' for user %s",
-                    _node_id, class_type, inputs["filename_prefix"], username,
-                )
-
-    if not modified:
-        logger.info("Isolation: no filename_prefix inputs found to rewrite for user %s", username)
-        # Log all node class_types to help debug
-        node_types = [
-            n.get("class_type", "?") for n in prompt.values() if isinstance(n, dict)
-        ]
-        logger.info("Isolation: node types in prompt: %s", node_types)
-
-    if modified:
-        new_body = json_mod.dumps(data).encode()
-
-        # ── Patch raw bytes cache (used by request.read()) ──
-        request._read_bytes = new_body
-
-        # ── Patch request.json() directly ──
-        # This is the MOST reliable approach.  ComfyUI's /prompt handler
-        # calls `await request.json()`.  By replacing the method on this
-        # instance we guarantee it returns the modified data regardless
-        # of how the underlying aiohttp version handles body caching.
-        _modified_data = data  # capture for closure
-
-        async def _patched_json(
-            self=None, *, loads=json_mod.loads, content_type=None
-        ):
-            return _modified_data
-
-        request.json = _patched_json
-
-        # ── Also replace the raw payload stream (belt-and-suspenders) ──
-        try:
-            from aiohttp.streams import StreamReader
-            try:
-                payload = StreamReader(request.protocol, 2**16,
-                                       loop=asyncio.get_event_loop())
-            except TypeError:
-                payload = StreamReader(request.protocol, 2**16)
-            payload.feed_data(new_body)
-            payload.feed_eof()
-            request._payload = payload
-        except Exception as exc:
-            logger.debug("Isolation: StreamReader patch skipped: %s", exc)
-
-        logger.info(
-            "Isolation: rewrote prompt for user %s (%d bytes -> %d bytes)",
-            username, len(body), len(new_body),
-        )
-
-        # Verify the patch took effect
-        verify = await request.read()
-        logger.info(
-            "Isolation: verify — request.read() returns modified=%s (len=%d)",
-            verify == new_body, len(verify),
-        )
+    # ── SECONDARY: best-effort body rewrite (helps prompt-tracking) ──
+    try:
+        body = await request.read()
+        data = json_mod.loads(body)
+        prompt = data.get("prompt", {})
+        modified = False
+        if isinstance(prompt, dict):
+            for _nid, node in prompt.items():
+                if not isinstance(node, dict):
+                    continue
+                inputs = node.get("inputs")
+                if isinstance(inputs, dict) and "filename_prefix" in inputs:
+                    pfx = inputs.get("filename_prefix", "ComfyUI")
+                    if isinstance(pfx, str) and not pfx.startswith(f"{username}/"):
+                        inputs["filename_prefix"] = f"{username}/{pfx}"
+                        modified = True
+        if modified:
+            new_body = json_mod.dumps(data).encode()
+            request._read_bytes = new_body
+            logger.info("Isolation: body-patched prompt for user %s", username)
+    except Exception as exc:
+        logger.debug("Isolation: body rewrite skipped: %s", exc)
 
     return await handler(request)
 
