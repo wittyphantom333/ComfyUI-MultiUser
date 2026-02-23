@@ -264,6 +264,161 @@ def _read_video_metadata(file_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+#  ComfyUI workflow → structured generation info
+# ---------------------------------------------------------------------------
+
+def _format_model_name(value: str) -> str:
+    """Strip paths and extensions from model filenames."""
+    s = str(value).strip().replace("\\", "/")
+    base = s.rsplit("/", 1)[-1]
+    for ext in (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"):
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+    return base
+
+
+def _parse_comfyui_prompt(prompt: dict) -> dict:
+    """Extract generation parameters from a ComfyUI workflow prompt dict.
+
+    Walks the node graph to find:
+      - Checkpoint / UNET / VAE / CLIP models
+      - LoRAs with strength values
+      - Sampler, scheduler, steps, CFG, seed
+      - Positive/negative prompts (CLIPTextEncode)
+      - Denoise, image dimensions
+    Returns a flat dict suitable for the frontend.
+    """
+    if not prompt or not isinstance(prompt, dict):
+        return {}
+
+    info: dict[str, Any] = {}
+    loras: list[dict] = []
+    positives: list[str] = []
+    negatives: list[str] = []
+    clip_nodes: dict[str, dict] = {}  # node_id → node
+
+    # Build a lookup: node_id → node
+    nodes = {}
+    for nid, node in prompt.items():
+        if isinstance(node, dict):
+            nodes[str(nid)] = node
+
+    for nid, node in nodes.items():
+        ct = node.get("class_type", "")
+        inputs = node.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+
+        ct_lower = ct.lower()
+
+        # ── Checkpoints / UNET / VAE ──
+        if "checkpointloader" in ct_lower or ct_lower in ("checkpointloadersimple",):
+            ckpt = inputs.get("ckpt_name", "")
+            if ckpt:
+                info["checkpoint"] = _format_model_name(ckpt)
+
+        if "unetloader" in ct_lower:
+            unet = inputs.get("unet_name", "") or inputs.get("model_name", "")
+            if unet:
+                info["unet"] = _format_model_name(unet)
+
+        if "vaeloader" in ct_lower:
+            vae = inputs.get("vae_name", "")
+            if vae:
+                info["vae"] = _format_model_name(vae)
+
+        # ── LoRA ──
+        if "lora" in ct_lower and ("loader" in ct_lower or "stack" in ct_lower):
+            name = inputs.get("lora_name", "") or inputs.get("lora", "")
+            if name:
+                lora_entry: dict[str, Any] = {"name": _format_model_name(name)}
+                sm = inputs.get("strength_model")
+                sc = inputs.get("strength_clip")
+                if sm is not None:
+                    lora_entry["strength_model"] = sm
+                if sc is not None:
+                    lora_entry["strength_clip"] = sc
+                loras.append(lora_entry)
+
+        # ── Samplers ──
+        if ct_lower in ("ksampler", "ksampleradvanced", "samplercustom",
+                         "ksamplerselectadvanced") or "ksampler" in ct_lower:
+            if "sampler_name" in inputs and not info.get("sampler"):
+                info["sampler"] = inputs["sampler_name"]
+            if "scheduler" in inputs and not info.get("scheduler"):
+                info["scheduler"] = inputs["scheduler"]
+            if "steps" in inputs and not info.get("steps"):
+                info["steps"] = inputs["steps"]
+            if "cfg" in inputs and not info.get("cfg"):
+                info["cfg"] = inputs["cfg"]
+            if "seed" in inputs and not info.get("seed"):
+                seed_val = inputs["seed"]
+                # Seed might be a direct value or a reference [node_id, output_idx]
+                if isinstance(seed_val, (int, float)):
+                    info["seed"] = str(int(seed_val))
+                elif isinstance(seed_val, str) and seed_val.isdigit():
+                    info["seed"] = seed_val
+            if "denoise" in inputs and not info.get("denoise"):
+                info["denoise"] = inputs["denoise"]
+
+        # ── CLIPTextEncode (prompts) ──
+        if ct_lower in ("cliptextencode", "cliptextencodesdxl"):
+            text = inputs.get("text", "")
+            if isinstance(text, str) and text.strip():
+                clip_nodes[nid] = {"text": text.strip(), "class_type": ct}
+
+        # ── Empty latent (dimensions) ──
+        if ct_lower == "emptylatentimage":
+            w = inputs.get("width")
+            h = inputs.get("height")
+            if w and h:
+                info["width"] = w
+                info["height"] = h
+                info["batch_size"] = inputs.get("batch_size", 1)
+
+        # ── Upscale models ──
+        if "upscale" in ct_lower and "model" in ct_lower and "loader" in ct_lower:
+            model = inputs.get("model_name", "")
+            if model:
+                info["upscale_model"] = _format_model_name(model)
+
+    # ── Resolve positive/negative prompts ──
+    # Heuristic: trace KSampler's positive/negative inputs back to
+    # CLIPTextEncode nodes.
+    for nid, node in nodes.items():
+        ct = node.get("class_type", "")
+        inputs = node.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+        if "ksampler" not in ct.lower():
+            continue
+
+        for label, dest_list in (("positive", positives), ("negative", negatives)):
+            ref = inputs.get(label)
+            if isinstance(ref, list) and len(ref) >= 1:
+                ref_id = str(ref[0])
+                if ref_id in clip_nodes:
+                    dest_list.append(clip_nodes[ref_id]["text"])
+
+    # Fallback: if we didn't resolve via KSampler refs, just collect all
+    if not positives and not negatives and clip_nodes:
+        for cn in clip_nodes.values():
+            txt = cn["text"]
+            # simple heuristic: negative prompts are often shorter
+            # or contain negative keywords — just list all as positive
+            positives.append(txt)
+
+    if positives:
+        info["positive_prompt"] = "\n\n".join(positives)
+    if negatives:
+        info["negative_prompt"] = "\n\n".join(negatives)
+    if loras:
+        info["loras"] = loras
+
+    return info
+
+
+# ---------------------------------------------------------------------------
 #  Route setup
 # ---------------------------------------------------------------------------
 
@@ -665,6 +820,19 @@ def setup_output_routes(routes):
             meta["embedded"] = _read_image_metadata(file_path)
         else:
             meta["embedded"] = {}
+
+        # Parse ComfyUI prompt into structured generation info
+        emb = meta.get("embedded", {})
+        prompt_data = emb.get("prompt")
+        if isinstance(prompt_data, dict):
+            meta["geninfo"] = _parse_comfyui_prompt(prompt_data)
+        elif isinstance(prompt_data, str):
+            try:
+                meta["geninfo"] = _parse_comfyui_prompt(json.loads(prompt_data))
+            except (json.JSONDecodeError, TypeError):
+                meta["geninfo"] = {}
+        else:
+            meta["geninfo"] = {}
 
         return web.json_response(meta)
 

@@ -208,35 +208,94 @@ const CSS = `
 }
 .mu-lb-tag-input:focus{border-color:#888}
 
-/* === Metadata side-panel === */
+/* === Metadata side-panel (Majoor-inspired) === */
 .mu-meta{
-  position:fixed;right:0;top:0;bottom:0;width:360px;max-width:90vw;z-index:100002;
-  background:var(--comfy-menu-bg,#353535);
-  border-left:1px solid var(--border-color,#4e4e4e);
-  overflow-y:auto;padding:12px;font-size:11px;color:var(--fg-color,#ddd);
-  box-shadow:-4px 0 12px rgba(0,0,0,.4);
+  position:fixed;right:0;top:0;bottom:0;width:420px;max-width:90vw;z-index:100002;
+  background:rgba(0,0,0,.88);backdrop-filter:blur(10px);
+  border-left:1px solid rgba(255,255,255,.12);
+  overflow-y:auto;padding:16px;font-size:11px;color:var(--fg-color,#ddd);
+  box-shadow:-4px 0 16px rgba(0,0,0,.6);
 }
-.mu-meta h3{margin:0 0 10px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.mu-meta h3{margin:0 0 14px;font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
 .mu-meta-close{background:none;border:none;color:#999;cursor:pointer;font-size:16px;padding:2px 4px}
 .mu-meta-close:hover{color:#fff}
-.mu-meta-sec{margin-bottom:12px}
-.mu-meta-sec h4{
-  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
-  color:#888;margin:0 0 6px;border-bottom:1px solid #444;padding-bottom:3px;
+
+/* Section boxes */
+.mu-meta-box{
+  background:var(--comfy-menu-bg,rgba(0,0,0,.3));
+  border-radius:6px;padding:12px;margin-bottom:10px;
+  border:1px solid rgba(255,255,255,.08);
 }
-.mu-meta-tbl{width:100%;border-collapse:collapse}
-.mu-meta-tbl td{padding:2px 4px;border-bottom:1px solid #333;vertical-align:top}
-.mu-meta-tbl td:first-child{color:#888;white-space:nowrap;width:80px}
-.mu-meta-tbl td:last-child{word-break:break-all}
-.mu-meta-json{
-  background:#1a1a1a;border-radius:3px;padding:6px;max-height:180px;overflow:auto;
+.mu-meta-box.emphasis{
+  border:1px solid rgba(255,255,255,.15);
+}
+.mu-meta-box-hdr{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  margin-bottom:10px;
+}
+
+/* 2-column grid for key-value pairs */
+.mu-meta-grid{
+  display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:start;
+}
+.mu-meta-grid-lbl{font-size:11px;color:rgba(127,127,127,.9);font-weight:500}
+.mu-meta-grid-val{
+  font-size:12px;color:rgba(255,255,255,.95);word-break:break-word;
+  white-space:pre-wrap;cursor:pointer;
+}
+.mu-meta-grid-val:hover{color:#fff}
+.mu-meta-grid-val.copied{color:#4CAF50!important;transition:color .2s}
+
+/* Prompt boxes */
+.mu-meta-prompt{
+  border-radius:6px;padding:12px;margin-bottom:10px;position:relative;
+}
+.mu-meta-prompt-hdr{
+  display:flex;justify-content:space-between;align-items:center;
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  margin-bottom:8px;
+}
+.mu-meta-prompt-txt{
+  font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  color:rgba(255,255,255,.9);cursor:pointer;
+}
+
+/* Seed hero */
+.mu-meta-seed{
+  border-radius:8px;padding:12px 16px;margin-bottom:10px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.mu-meta-seed-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+.mu-meta-seed-val{
+  font-size:18px;font-weight:700;color:#fff;
+  font-family:'Consolas','Monaco','Courier New',monospace;letter-spacing:1px;cursor:pointer;
+}
+.mu-meta-seed-val:hover{color:#ffd54f}
+
+/* Copy button */
+.mu-meta-copy{
+  background:none;border:none;cursor:pointer;opacity:.5;transition:opacity .15s;
+  padding:2px;display:flex;align-items:center;
+}
+.mu-meta-copy:hover{opacity:1}
+.mu-meta-copy svg{width:14px;height:14px;fill:currentColor}
+
+/* Collapsible raw JSON */
+.mu-meta-raw{margin-bottom:10px}
+.mu-meta-raw summary{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  color:#607D8B;cursor:pointer;padding:8px 0 4px;
+}
+.mu-meta-raw pre{
+  background:#111;border-radius:4px;padding:8px;max-height:280px;overflow:auto;
   font-family:monospace;font-size:10px;color:#aaa;white-space:pre-wrap;word-break:break-all;
+  margin:6px 0 0;
 }
-.mu-meta-btn{
+.mu-meta-raw-btn{
   background:none;border:1px solid #4e4e4e;border-radius:2px;
-  color:#5ba3d9;cursor:pointer;padding:1px 6px;font-size:10px;margin-top:3px;
+  color:#5ba3d9;cursor:pointer;padding:1px 6px;font-size:10px;margin-top:4px;
 }
-.mu-meta-btn:hover{background:#333}
+.mu-meta-raw-btn:hover{background:#333}
 `;
 
 let _cssOk = false;
@@ -516,7 +575,7 @@ function _openCtx(e, f) {
     _ctxItem(m, `Tags: ${f.tags.join(", ")}`, null);
   }
   _ctxSep(m);
-  _ctxItem(m, "Metadata", () => { _closeCtx(); _openLB(f); setTimeout(() => _toggleMeta(f), 100); });
+  _ctxItem(m, "Gen Info", () => { _closeCtx(); _openLB(f); setTimeout(() => _toggleMeta(f), 100); });
   _ctxItem(m, "Delete", () => { _closeCtx(); _deletefile(f); }, true);
 
   // Position
@@ -580,7 +639,7 @@ function _openLB(f) {
   btnDl.onclick = () => { const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click(); };
   tr.appendChild(btnDl);
 
-  const btnMeta = _mk("button"); btnMeta.textContent = "Metadata";
+  const btnMeta = _mk("button"); btnMeta.textContent = "Gen Info";
   btnMeta.onclick = () => _toggleMeta(f);
   tr.appendChild(btnMeta);
 
@@ -713,8 +772,113 @@ function _renderLBTags(el, f) {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Metadata side-panel
+   Metadata side-panel  (Majoor-inspired color-coded sections)
    ──────────────────────────────────────────────────────────────────── */
+
+// Color palette for section accents
+const _C = {
+  blue:   "#2196F3",
+  green:  "#4CAF50",
+  red:    "#F44336",
+  purple: "#9C27B0",
+  orange: "#FF9800",
+  pink:   "#E91E63",
+  teal:   "#607D8B",
+};
+
+function _hexRgba(hex, a) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** Copy-to-clipboard with green flash feedback on the element */
+function _copyFlash(el, text) {
+  navigator.clipboard.writeText(text).catch(()=>{});
+  const orig = el.style.color;
+  el.style.color = "#4CAF50";
+  el.classList.add("copied");
+  setTimeout(() => { el.style.color = orig; el.classList.remove("copied"); }, 600);
+}
+
+/** Small SVG copy icon button */
+function _copyBtn(text) {
+  const btn = _mk("button","mu-meta-copy");
+  btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+  btn.onclick = (e) => { e.stopPropagation(); _copyFlash(btn, text); };
+  return btn;
+}
+
+/** Create a colored section box with a title header */
+function _metaBox(title, color, opts = {}) {
+  const box = _mk("div","mu-meta-box");
+  if (opts.emphasis) {
+    box.classList.add("emphasis");
+    box.style.background = `linear-gradient(135deg, ${_hexRgba(color,.16)} 0%, ${_hexRgba(color,.08)} 100%)`;
+    box.style.borderColor = _hexRgba(color,.45);
+    box.style.boxShadow = `0 0 0 1px ${_hexRgba(color,.15)} inset`;
+  }
+  box.style.borderLeft = `3px solid ${color}`;
+  const hdr = _mk("div","mu-meta-box-hdr");
+  hdr.style.color = color;
+  hdr.textContent = title;
+  box.appendChild(hdr);
+  return box;
+}
+
+/** Create a 2-column grid of label:value pairs inside a section box */
+function _paramBox(title, fields, color, opts = {}) {
+  if (!fields.length) return null;
+  const box = _metaBox(title, color, opts);
+  const grid = _mk("div","mu-meta-grid");
+  for (const {label, value} of fields) {
+    const lbl = _mk("span","mu-meta-grid-lbl"); lbl.textContent = label;
+    const val = _mk("span","mu-meta-grid-val"); val.textContent = String(value);
+    val.onclick = () => _copyFlash(val, String(value));
+    grid.appendChild(lbl);
+    grid.appendChild(val);
+  }
+  box.appendChild(grid);
+  return box;
+}
+
+/** Create a prompt display box (positive/negative) */
+function _promptBox(title, text, color) {
+  if (!text) return null;
+  const box = _mk("div","mu-meta-prompt");
+  box.style.background = `linear-gradient(135deg, ${_hexRgba(color,.16)} 0%, ${_hexRgba(color,.10)} 100%)`;
+  box.style.borderLeft = `3px solid ${color}`;
+  box.style.border = `1px solid ${_hexRgba(color,.45)}`;
+  box.style.boxShadow = `0 0 0 1px ${_hexRgba(color,.15)} inset`;
+
+  const hdr = _mk("div","mu-meta-prompt-hdr");
+  hdr.style.color = color;
+  const span = _mk("span"); span.textContent = title;
+  hdr.appendChild(span);
+  hdr.appendChild(_copyBtn(text));
+  box.appendChild(hdr);
+
+  const txt = _mk("div","mu-meta-prompt-txt");
+  txt.textContent = text;
+  txt.onclick = () => _copyFlash(txt, text);
+  box.appendChild(txt);
+  return box;
+}
+
+/** Create the hero seed display */
+function _seedBox(seed) {
+  if (!seed) return null;
+  const box = _mk("div","mu-meta-seed");
+  box.style.background = `linear-gradient(135deg, ${_hexRgba(_C.pink,.15)} 0%, ${_hexRgba(_C.purple,.15)} 100%)`;
+  box.style.border = `2px solid ${_C.pink}`;
+  const lbl = _mk("span","mu-meta-seed-lbl"); lbl.textContent = "Seed"; lbl.style.color = _C.pink;
+  const val = _mk("span","mu-meta-seed-val"); val.textContent = seed;
+  val.onclick = () => _copyFlash(val, seed);
+  box.appendChild(lbl);
+  box.appendChild(val);
+  box.appendChild(_copyBtn(seed));
+  return box;
+}
+
 async function _toggleMeta(f) {
   const ex = document.querySelector(".mu-meta");
   if (ex) { ex.remove(); return; }
@@ -722,7 +886,7 @@ async function _toggleMeta(f) {
   const panel = _mk("div","mu-meta");
   panel.onclick = e => e.stopPropagation();
 
-  const h = _mk("h3"); h.textContent = "Metadata";
+  const h = _mk("h3"); h.textContent = "Generation Info";
   const cb = _mk("button","mu-meta-close"); cb.textContent = "✕"; cb.onclick = () => panel.remove();
   h.appendChild(cb);
   panel.appendChild(h);
@@ -732,68 +896,123 @@ async function _toggleMeta(f) {
 
   try {
     const r = await apiGet(`/outputs/metadata?${new URLSearchParams({filename:f.filename,subfolder:f.subfolder||""})}`);
-    if (!r.ok) { panel.querySelector(".mu-loading").textContent = "Failed"; return; }
+    if (!r.ok) { panel.querySelector(".mu-loading").textContent = "Failed to load metadata."; return; }
     const m = await r.json();
     panel.querySelector(".mu-loading")?.remove();
 
-    // basic info
-    const sec1 = _mk("div","mu-meta-sec");
-    sec1.appendChild(Object.assign(_mk("h4"),{textContent:"File Info"}));
-    const t1 = _mk("table","mu-meta-tbl");
-    t1.innerHTML = `
-      <tr><td>Name</td><td>${_esc(m.filename)}</td></tr>
-      <tr><td>Size</td><td>${_bytes(m.size)}</td></tr>
-      <tr><td>Modified</td><td>${_date(m.modified)}</td></tr>
-      <tr><td>Type</td><td>${m.extension}</td></tr>`;
-    sec1.appendChild(t1);
-    panel.appendChild(sec1);
-
-    // embedded metadata
+    const gi = m.geninfo || {};
     const emb = m.embedded || {};
-    const simpleF = {}, jsonF = {};
-    for (const [k,v] of Object.entries(emb)) {
-      if (typeof v === "object" && v !== null) jsonF[k] = v; else simpleF[k] = v;
-    }
+    const hasGeninfo = Object.keys(gi).length > 0;
 
-    if (Object.keys(simpleF).length) {
-      const sec = _mk("div","mu-meta-sec");
-      sec.appendChild(Object.assign(_mk("h4"),{textContent:"Properties"}));
-      const tbl = _mk("table","mu-meta-tbl");
-      for (const [k,v] of Object.entries(simpleF)) {
-        const lbl = k.startsWith("_") ? k.slice(1) : k;
-        const tr = _mk("tr"); tr.innerHTML = `<td>${_esc(lbl)}</td><td>${_esc(String(v))}</td>`;
-        tbl.appendChild(tr);
+    // ── File Info (always shown) ──
+    const fileFields = [
+      {label:"Name", value:m.filename},
+      {label:"Size", value:_bytes(m.size)},
+      {label:"Modified", value:_date(m.modified)},
+      {label:"Type", value:(m.extension||"").toUpperCase().replace(".", "")},
+    ];
+    if (emb._dimensions) fileFields.push({label:"Dimensions", value:emb._dimensions});
+    if (emb._mode) fileFields.push({label:"Color Mode", value:emb._mode});
+    if (emb._duration) fileFields.push({label:"Duration", value:parseFloat(emb._duration).toFixed(1) + "s"});
+    if (emb._codec) fileFields.push({label:"Codec", value:emb._codec});
+    if (emb._fps) fileFields.push({label:"FPS", value:emb._fps});
+    panel.appendChild(_paramBox("File Info", fileFields, _C.teal, {emphasis:true}));
+
+    if (hasGeninfo) {
+      // ── Positive Prompt ──
+      const ppBox = _promptBox("Positive Prompt", gi.positive_prompt, _C.green);
+      if (ppBox) panel.appendChild(ppBox);
+
+      // ── Negative Prompt ──
+      const npBox = _promptBox("Negative Prompt", gi.negative_prompt, _C.red);
+      if (npBox) panel.appendChild(npBox);
+
+      // ── Model & LoRA ──
+      const modelFields = [];
+      if (gi.checkpoint) modelFields.push({label:"Checkpoint", value:gi.checkpoint});
+      if (gi.unet)       modelFields.push({label:"UNET", value:gi.unet});
+      if (gi.vae)        modelFields.push({label:"VAE", value:gi.vae});
+      if (gi.upscale_model) modelFields.push({label:"Upscale", value:gi.upscale_model});
+      if (gi.loras && gi.loras.length) {
+        const loraText = gi.loras.map(l => {
+          let s = l.name;
+          const parts = [];
+          if (l.strength_model != null) parts.push(`m=${l.strength_model}`);
+          if (l.strength_clip != null)  parts.push(`c=${l.strength_clip}`);
+          if (parts.length) s += ` (${parts.join(", ")})`;
+          return s;
+        }).join("\n");
+        modelFields.push({label:"LoRA", value:loraText});
       }
-      sec.appendChild(tbl);
-      panel.appendChild(sec);
+      const mBox = _paramBox("Model & LoRA", modelFields, _C.purple, {emphasis:true});
+      if (mBox) panel.appendChild(mBox);
+
+      // ── Sampling ──
+      const samplingFields = [];
+      if (gi.sampler)   samplingFields.push({label:"Sampler", value:gi.sampler});
+      if (gi.steps)     samplingFields.push({label:"Steps", value:gi.steps});
+      if (gi.cfg)       samplingFields.push({label:"CFG Scale", value:gi.cfg});
+      if (gi.scheduler) samplingFields.push({label:"Scheduler", value:gi.scheduler});
+      if (gi.denoise != null && gi.denoise !== 1) samplingFields.push({label:"Denoise", value:gi.denoise});
+      const sBox = _paramBox("Sampling", samplingFields, _C.orange, {emphasis:true});
+      if (sBox) panel.appendChild(sBox);
+
+      // ── Seed (hero) ──
+      const seedEl = _seedBox(gi.seed);
+      if (seedEl) panel.appendChild(seedEl);
+
+      // ── Image ──
+      const imgFields = [];
+      if (gi.width && gi.height) imgFields.push({label:"Resolution", value:`${gi.width} × ${gi.height}`});
+      if (gi.batch_size && gi.batch_size > 1) imgFields.push({label:"Batch Size", value:gi.batch_size});
+      const iBox = _paramBox("Image", imgFields, _C.blue, {emphasis:true});
+      if (iBox) panel.appendChild(iBox);
     }
 
-    for (const [k,v] of Object.entries(jsonF)) {
-      const sec = _mk("div","mu-meta-sec");
-      const lbl = k.startsWith("_") ? k.slice(1) : k;
-      sec.appendChild(Object.assign(_mk("h4"),{textContent:lbl}));
-      const js = JSON.stringify(v,null,2);
-      const pre = _mk("div","mu-meta-json");
-      pre.textContent = js.length > 500 ? js.slice(0,500)+"…" : js;
-      sec.appendChild(pre);
-      if (js.length > 500) {
-        let exp = false;
-        const tb = _mk("button","mu-meta-btn"); tb.textContent = "Show full";
-        tb.onclick = () => { exp = !exp; pre.textContent = exp ? js : js.slice(0,500)+"…"; tb.textContent = exp ? "Collapse" : "Show full"; };
-        sec.appendChild(tb);
+    // ── Raw embedded metadata (collapsible) ──
+    const jsonKeys = Object.entries(emb).filter(([k,v]) => typeof v === "object" && v !== null);
+    if (jsonKeys.length) {
+      for (const [k,v] of jsonKeys) {
+        const details = _mk("details","mu-meta-raw");
+        const summary = _mk("summary");
+        summary.textContent = k === "prompt" ? "Raw Workflow (prompt)" : k === "workflow" ? "Raw Workflow (UI)" : k;
+        details.appendChild(summary);
+
+        const js = JSON.stringify(v, null, 2);
+        const pre = _mk("pre"); pre.textContent = js;
+        details.appendChild(pre);
+
+        const btnRow = _mk("div"); btnRow.style.cssText = "display:flex;gap:4px;margin-top:4px";
+        const cp = _mk("button","mu-meta-raw-btn"); cp.textContent = "Copy JSON";
+        cp.onclick = () => { navigator.clipboard.writeText(js); cp.textContent = "Copied!"; setTimeout(()=>cp.textContent="Copy JSON",1500); };
+        btnRow.appendChild(cp);
+        details.appendChild(btnRow);
+
+        panel.appendChild(details);
       }
-      const cp = _mk("button","mu-meta-btn"); cp.textContent = "Copy"; cp.style.marginLeft = "4px";
-      cp.onclick = () => { navigator.clipboard.writeText(js); cp.textContent = "Copied!"; setTimeout(()=>cp.textContent="Copy",1500); };
-      sec.appendChild(cp);
-      panel.appendChild(sec);
     }
 
-    if (!Object.keys(emb).length) {
-      panel.appendChild(Object.assign(_mk("div","mu-meta-sec"),{textContent:"No embedded metadata."}));
+    // Simple embedded properties (non-JSON)
+    const simpleKeys = Object.entries(emb).filter(([k,v]) => typeof v !== "object" || v === null);
+    const displaySimple = simpleKeys.filter(([k]) => !k.startsWith("_")); // skip _dimensions etc
+    if (displaySimple.length) {
+      const propFields = displaySimple.map(([k,v]) => ({label: k, value: String(v)}));
+      const pBox = _paramBox("Properties", propFields, _C.teal);
+      if (pBox) panel.appendChild(pBox);
     }
+
+    if (!hasGeninfo && !Object.keys(emb).length) {
+      const empty = _mk("div","mu-meta-box");
+      empty.style.textAlign = "center";
+      empty.style.color = "#888";
+      empty.style.padding = "20px";
+      empty.textContent = "No embedded metadata found.";
+      panel.appendChild(empty);
+    }
+
   } catch(e) {
     const ld = panel.querySelector(".mu-loading");
-    if (ld) ld.textContent = "Error: "+e.message;
+    if (ld) ld.textContent = "Error: " + e.message;
   }
 }
 
