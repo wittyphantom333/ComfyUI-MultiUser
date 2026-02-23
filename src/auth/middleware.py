@@ -17,18 +17,36 @@ ALWAYS_PUBLIC = {
     "/multiuser/setup-status",
 }
 
-# Route prefixes for static assets that don't need auth
+# Route prefixes that are always public.
+# The ComfyUI frontend (HTML, JS, CSS, extensions) must load without auth
+# because the login UI is a JS overlay rendered *inside* the ComfyUI page.
 PUBLIC_PREFIXES = (
     "/multiuser/static/",
+    "/extensions/",       # custom-node JS (including our own multiuser JS)
+    "/scripts/",          # ComfyUI core JS
+    "/assets/",           # ComfyUI bundled assets (Vite builds, CSS, etc.)
+    "/favicon",           # favicon.ico / favicon.svg
 )
+
+# Exact paths that are part of the frontend shell
+FRONTEND_PATHS = {
+    "/",                  # main ComfyUI page
+}
 
 
 def _is_public_route(path: str) -> bool:
     """Check if a route is public (no auth required)."""
     if path in ALWAYS_PUBLIC:
         return True
+    if path in FRONTEND_PATHS:
+        return True
     for prefix in PUBLIC_PREFIXES:
         if path.startswith(prefix):
+            return True
+    # Static file extensions served by the ComfyUI web root
+    if path.rsplit(".", 1)[-1] in ("js", "css", "html", "ico", "svg", "png", "woff", "woff2", "ttf"):
+        # Only allow top-level static assets, not API-like paths
+        if not path.startswith("/api/") and not path.startswith("/multiuser/"):
             return True
     # Check config for additional public routes
     extra = get_config("server", "public_routes", default=[])
@@ -127,17 +145,12 @@ async def auth_middleware(request: web.Request, handler):
             user = await _get_user_from_jwt(cookie_token)
 
     if user is None:
-        # Check if this is an API request or browser request
-        accept = request.headers.get("Accept", "")
-        if "text/html" in accept and not path.startswith("/api/"):
-            # Browser request - redirect to login
-            raise web.HTTPFound("/multiuser/login")
-        else:
-            # API request - return 401
-            return web.json_response(
-                {"error": "Authentication required"},
-                status=401
-            )
+        # Always return 401 JSON — the frontend JS overlay handles
+        # showing the login UI, so we never redirect to a separate page.
+        return web.json_response(
+            {"error": "Authentication required"},
+            status=401
+        )
 
     # Attach user to request for downstream handlers
     request["multiuser_user"] = user
