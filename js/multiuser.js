@@ -17,7 +17,7 @@ import { showAuthOverlay } from "./auth-ui.js";
 import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
 import { renderUserSidebar } from "./user-menu.js";
 import { renderAdminSidebar } from "./admin-panel.js";
-import { renderOutputGallery } from "./output-gallery.js";
+import { renderOutputGallery, renderAllOutputsGallery } from "./output-gallery.js";
 
 /** Shared auth state */
 let _authenticated = false;
@@ -82,6 +82,20 @@ function _registerSidebarTabs() {
       });
     } catch (e) {
       console.warn("[MultiUser] Could not register admin sidebar tab:", e.message);
+    }
+
+    // ── Register All Outputs gallery (admin only) ──
+    try {
+      app.extensionManager.registerSidebarTab({
+        id: "multiuser-all-outputs",
+        icon: "pi pi-th-large",
+        title: "All Outputs",
+        tooltip: "Browse all users' outputs (admin)",
+        type: "custom",
+        render: (el) => renderAllOutputsGallery(el),
+      });
+    } catch (e) {
+      console.warn("[MultiUser] Could not register all-outputs sidebar tab:", e.message);
     }
   }
 }

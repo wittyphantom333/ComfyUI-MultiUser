@@ -266,11 +266,13 @@ let _pages = 0;
 let _admin = false;
 let _tags = [];        // user's known tags
 let _debounce = null;
+let _mode = "personal"; // "personal" | "admin"
+let _endpoint = "/outputs"; // API endpoint for list
 
 /* ────────────────────────────────────────────────────────────────────
    Public entry point (called by multiuser.js sidebar tab)
    ──────────────────────────────────────────────────────────────────── */
-export function renderOutputGallery(el) {
+function _renderGalleryInto(el, mode) {
   _css();
   el.innerHTML = "";
   const user = window.__multiuser_current_user;
@@ -279,6 +281,8 @@ export function renderOutputGallery(el) {
     return;
   }
   _admin = !!user.is_admin;
+  _mode = mode || "personal";
+  _endpoint = _mode === "admin" ? "/outputs/all" : "/outputs";
   _page = 1; _search = ""; _type = "all"; _userF = ""; _tagF = ""; _minR = 0;
 
   const root = _mk("div", "mu-gallery");
@@ -291,7 +295,7 @@ export function renderOutputGallery(el) {
   tb.appendChild(inp);
   tb.appendChild(_sel([["newest","Newest"],["oldest","Oldest"],["name","Name"],["rating","Top Rated"]], _sort, v => { _sort = v; _page = 1; _load(); }));
   tb.appendChild(_sel([["all","All Types"],["image","Images"],["video","Videos"]], _type, v => { _type = v; _page = 1; _load(); }));
-  if (_admin) { const us = _sel([["","All Users"]], "", v => { _userF = v; _page = 1; _load(); }); us.id = "mu-uf"; tb.appendChild(us); _loadUsers(us); }
+  if (_mode === "admin") { const us = _sel([["","All Users"]], "", v => { _userF = v; _page = 1; _load(); }); us.id = "mu-uf"; tb.appendChild(us); _loadUsers(us); }
   const rbtn = _mk("button","mu-toolbar-btn"); rbtn.textContent = "↻"; rbtn.title = "Refresh";
   rbtn.onclick = () => _load();
   tb.appendChild(rbtn);
@@ -310,6 +314,9 @@ export function renderOutputGallery(el) {
   _loadTags();
   _load();
 }
+
+export function renderOutputGallery(el) { _renderGalleryInto(el, "personal"); }
+export function renderAllOutputsGallery(el) { _renderGalleryInto(el, "admin"); }
 
 /* ────────────────────────────────────────────────────────────────────
    Helpers
@@ -352,7 +359,7 @@ async function _load() {
     if (_userF) p.set("user",_userF);
     if (_tagF) p.set("tag",_tagF);
     if (_minR > 0) p.set("min_rating",_minR);
-    const r = await apiGet(`/outputs?${p}`);
+    const r = await apiGet(`${_endpoint}?${p}`);
     if (!r.ok) { const e = await r.json().catch(()=>({})); grid.innerHTML = `<div class="mu-empty">${e.error||"Failed to load"}</div>`; return; }
     const d = await r.json();
     _files = d.files||[]; _total = d.total||0; _pages = d.pages||0;

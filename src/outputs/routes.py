@@ -299,42 +299,146 @@ def setup_output_routes(routes):
         sort = request.query.get("sort", "newest")
         search = request.query.get("search", "").strip().lower()
         type_filter = request.query.get("type", "all")
-        user_filter = request.query.get("user", "").strip()
         tag_filter = request.query.get("tag", "").strip().title()
         min_rating = int(request.query.get("min_rating", 0))
 
         db = await get_db()
 
         # ── Collect files with STRICT scoping ──
+        # EVERY user (admin or not) only sees their own subfolder here.
+        # Admins use the separate /outputs/all endpoint for cross-user browsing.
         files: list[dict] = []
         logger.debug(
             "list_outputs: user=%s is_admin=%s output_dir=%s",
             username, is_admin, output_dir,
         )
 
-        if is_admin:
-            if user_filter:
-                target_dir = output_dir / user_filter
-                if target_dir.is_dir():
-                    for entry in target_dir.rglob("*"):
-                        if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                            files.append(_file_info(entry, output_dir))
-            else:
-                for entry in output_dir.rglob("*"):
-                    if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                        files.append(_file_info(entry, output_dir))
-        else:
-            # ── NON-ADMIN: ONLY their own subfolder — no cross-user leaking ──
-            user_dir = output_dir / username
-            if user_dir.is_dir():
-                for entry in user_dir.rglob("*"):
-                    if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                        files.append(_file_info(entry, output_dir))
+        user_dir = output_dir / username
+        if user_dir.is_dir():
+            for entry in user_dir.rglob("*"):
+                if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                    files.append(_file_info(entry, output_dir))
 
         logger.debug(
             "list_outputs: user=%s found %d files before filters",
             username, len(files),
         )
+
+        # Apply search filter
+        if search:
+            files = [f for f in files if search in f["filename"].lower()]
+
+        # Apply type filter
+        if type_filter == "image":
+            files = [f for f in files if f["type"] == "image"]
+        elif type_filter == "video":
+            files = [f for f in files if f["type"] == "video"]
+
+        # ── Load tags + ratings from DB ──
+        file_paths = [f["relative_path"] for f in files]
+        tags_map: dict[str, list[str]] = {}
+        ratings_map: dict[str, int] = {}
+
+        if file_paths:
+            placeholders = ", ".join("?" for _ in file_paths)
+            tag_rows = await db.fetchall(
+                f"SELECT file_path, tag FROM output_tags WHERE user_id = ? AND file_path IN ({placeholders})",
+                (user_id, *file_paths),
+            )
+            for row in tag_rows:
+                tags_map.setdefault(row["file_path"], []).append(row["tag"])
+
+            rating_rows = await db.fetchall(
+                f"SELECT file_path, rating FROM output_ratings WHERE user_id = ? AND file_path IN ({placeholders})",
+                (user_id, *file_paths),
+            )
+            for row in rating_rows:
+                ratings_map[row["file_path"]] = row["rating"]
+
+        for f in files:
+            rp = f["relative_path"]
+            f["tags"] = tags_map.get(rp, [])
+            f["rating"] = ratings_map.get(rp, 0)
+
+        # Apply tag filter
+        if tag_filter:
+            files = [f for f in files if tag_filter in [t.lower() for t in f["tags"]]]
+
+        # Apply rating filter
+        if min_rating > 0:
+            files = [f for f in files if f["rating"] >= min_rating]
+
+        # Sort
+        if sort == "oldest":
+            files.sort(key=lambda f: f["modified"])
+        elif sort == "name":
+            files.sort(key=lambda f: f["filename"].lower())
+        elif sort == "rating":
+            files.sort(key=lambda f: (-f["rating"], -f["modified"]))
+        else:
+            files.sort(key=lambda f: f["modified"], reverse=True)
+
+        # Paginate
+        total = len(files)
+        start = (page - 1) * per_page
+        page_files = files[start:start + per_page]
+
+        return web.json_response({
+            "files": page_files,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page if total else 0,
+        })
+
+    # ------------------------------------------------------------------
+    #  GET /multiuser/outputs/all  —  admin cross-user browser
+    # ------------------------------------------------------------------
+    @routes.get("/multiuser/outputs/all")
+    async def list_all_outputs(request: web.Request):
+        """Admin-only: list output files across ALL users.
+
+        Query params:
+            page, per_page, sort, search, type, user, tag, min_rating
+        """
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+        if not user.get("is_admin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+
+        output_dir = _get_output_dir()
+        if not output_dir.exists():
+            return web.json_response({
+                "files": [], "total": 0, "page": 1, "per_page": 50, "pages": 0,
+            })
+
+        user_id = user["id"]
+
+        page = max(1, int(request.query.get("page", 1)))
+        per_page = min(max(1, int(request.query.get("per_page", 50))), 500)
+        sort = request.query.get("sort", "newest")
+        search = request.query.get("search", "").strip().lower()
+        type_filter = request.query.get("type", "all")
+        user_filter = request.query.get("user", "").strip()
+        tag_filter = request.query.get("tag", "").strip().title()
+        min_rating = int(request.query.get("min_rating", 0))
+
+        db = await get_db()
+
+        # ── Collect files across all users or a specific user ──
+        files: list[dict] = []
+
+        if user_filter:
+            target_dir = output_dir / user_filter
+            if target_dir.is_dir():
+                for entry in target_dir.rglob("*"):
+                    if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                        files.append(_file_info(entry, output_dir))
+        else:
+            for entry in output_dir.rglob("*"):
+                if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                    files.append(_file_info(entry, output_dir))
 
         # Apply search filter
         if search:
