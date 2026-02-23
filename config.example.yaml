@@ -1,0 +1,87 @@
+# ComfyUI-MultiUser Configuration
+# Copy this file to config.yaml and edit as needed.
+
+# Database configuration
+database:
+  # "sqlite" or "postgres"
+  backend: "sqlite"
+  
+  # SQLite settings (used when backend is "sqlite")
+  sqlite:
+    # Path relative to this extension's directory
+    path: "data/multiuser.db"
+  
+  # PostgreSQL settings (used when backend is "postgres")
+  postgres:
+    host: "localhost"
+    port: 5432
+    database: "comfyui_multiuser"
+    user: "comfyui"
+    password: ""
+
+# Authentication settings
+auth:
+  # Secret key for JWT signing. CHANGE THIS in production!
+  # If empty, a random key is generated on first start and saved.
+  secret_key: ""
+  
+  # JWT token expiry in hours
+  token_expiry_hours: 24
+  
+  # API token expiry in days (0 = never expires)
+  api_token_expiry_days: 0
+  
+  # Maximum failed login attempts before lockout
+  max_login_attempts: 5
+  
+  # Lockout duration in minutes
+  lockout_duration_minutes: 15
+  
+  # Bcrypt cost factor (higher = slower but more secure)
+  bcrypt_cost: 12
+
+# Registration settings
+registration:
+  # "open" - anyone can register
+  # "invite" - admin must create accounts or send invites
+  mode: "open"
+  
+  # Default group for new users
+  default_group: "users"
+  
+  # Require email for registration
+  require_email: false
+
+# Permissions
+permissions:
+  # Default permissions for the "users" group
+  # These are node class name patterns (supports wildcards)
+  default_allowed_nodes:
+    - "*"  # Allow all nodes by default
+  
+  default_denied_nodes: []
+  
+  # Maximum concurrent queue items per user (0 = unlimited)
+  max_queue_per_user: 0
+  
+  # Maximum image resolution per user (0 = unlimited)
+  max_resolution: 0
+
+# Generation tracking
+generations:
+  # Enable generation history tracking
+  enabled: true
+  
+  # Maximum history entries per user (0 = unlimited)
+  max_history_per_user: 1000
+  
+  # Store full prompt JSON in history
+  store_prompts: true
+
+# Server settings
+server:
+  # Routes that don't require authentication
+  public_routes:
+    - "/multiuser/login"
+    - "/multiuser/register"
+    - "/multiuser/health"

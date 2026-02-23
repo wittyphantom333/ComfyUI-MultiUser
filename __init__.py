@@ -1,0 +1,225 @@
+"""
+ComfyUI-MultiUser — Multi-user authentication, permissions, and tracking for ComfyUI.
+
+This is the main entry point for the custom node. ComfyUI discovers this file and uses
+NODE_CLASS_MAPPINGS and WEB_DIRECTORY to register nodes and serve frontend JavaScript.
+"""
+
+import asyncio
+import logging
+import server  # ComfyUI's PromptServer module
+
+from .src.config import get_config
+from .src.db.factory import get_db, close_db
+from .src.auth.middleware import install_middleware
+from .src.auth.routes import setup_auth_routes
+from .src.users.routes import setup_user_routes
+from .src.groups.routes import setup_group_routes
+from .src.permissions.routes import setup_permission_routes
+from .src.tokens.routes import setup_ext_token_routes
+from .src.generations.routes import setup_generation_routes
+from .src.generations.tracker import (
+    on_prompt_queued,
+    on_prompt_started,
+    on_prompt_completed,
+    on_prompt_error,
+    get_prompt_user,
+)
+
+logger = logging.getLogger("comfyui-multiuser")
+
+# ---------------------------------------------------------------------------
+# ComfyUI Custom Node exports
+# ---------------------------------------------------------------------------
+
+# No workflow-facing nodes for now — this extension is purely server-side + UI.
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+# Serve the JS frontend from ./js/
+WEB_DIRECTORY = "./js"
+
+# ---------------------------------------------------------------------------
+# Route registration
+# ---------------------------------------------------------------------------
+
+prompt_server = server.PromptServer.instance
+routes = prompt_server.routes
+
+setup_auth_routes(routes)
+setup_user_routes(routes)
+setup_group_routes(routes)
+setup_permission_routes(routes)
+setup_ext_token_routes(routes)
+setup_generation_routes(routes)
+
+logger.info("MultiUser: all API routes registered")
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
+install_middleware(prompt_server.app)
+
+# ---------------------------------------------------------------------------
+# Database initialisation (runs in background at startup)
+# ---------------------------------------------------------------------------
+
+async def _init_db():
+    """Initialise the database pool/connection and run migrations."""
+    try:
+        db = await get_db()
+        logger.info("MultiUser: database ready (%s)", type(db).__name__)
+    except Exception:
+        logger.exception("MultiUser: failed to initialise database")
+
+# Schedule DB init on the running event loop (available at import-time in ComfyUI)
+loop = asyncio.get_event_loop()
+loop.create_task(_init_db())
+
+# ---------------------------------------------------------------------------
+# Execution hooks for generation tracking
+# ---------------------------------------------------------------------------
+
+def _hook_execution_events():
+    """
+    Hook into PromptServer signals to track prompt lifecycle.
+
+    ComfyUI's PromptServer provides an `on_prompt_handler` list — callables
+    invoked with (json_data) when /prompt is POSTed. We also monkey-patch the
+    send_sync method to capture execution status broadcasts.
+    """
+    original_send_sync = prompt_server.send_sync
+
+    def patched_send_sync(event, data, sid=None):
+        """Intercept status events to track prompt lifecycle."""
+        try:
+            if event == "execution_start":
+                prompt_id = data.get("prompt_id")
+                if prompt_id:
+                    asyncio.ensure_future(on_prompt_started(prompt_id))
+
+            elif event == "execution_success":
+                prompt_id = data.get("prompt_id")
+                if prompt_id:
+                    # Try to gather output images from the data
+                    output_paths = None
+                    outputs = data.get("output", {})
+                    if outputs:
+                        paths = []
+                        for node_output in outputs.values():
+                            images = node_output.get("images", [])
+                            for img in images:
+                                if isinstance(img, dict) and "filename" in img:
+                                    paths.append(img["filename"])
+                        output_paths = paths or None
+                    asyncio.ensure_future(on_prompt_completed(prompt_id, output_paths))
+
+            elif event == "execution_error":
+                prompt_id = data.get("prompt_id")
+                error_msg = data.get("exception_message", "")
+                if prompt_id:
+                    asyncio.ensure_future(on_prompt_error(prompt_id, str(error_msg)))
+
+            elif event == "execution_interrupted":
+                prompt_id = data.get("prompt_id")
+                if prompt_id:
+                    asyncio.ensure_future(on_prompt_error(prompt_id, "Interrupted"))
+
+        except Exception:
+            logger.exception("MultiUser: error in execution hook")
+
+        # Always call the original
+        return original_send_sync(event, data, sid)
+
+    prompt_server.send_sync = patched_send_sync
+    logger.info("MultiUser: execution tracking hooks installed")
+
+
+def _hook_prompt_via_middleware():
+    """
+    Use a targeted middleware to intercept /prompt POST and tag generation tracking.
+    This is cleaner than trying to replace route handlers.
+    """
+    import json as json_mod
+    from aiohttp import web
+
+    @web.middleware
+    async def prompt_tracking_middleware(request: web.Request, handler):
+        # Only intercept POST /prompt
+        if request.method == "POST" and request.path == "/prompt":
+            user = request.get("multiuser_user")
+
+            if user and get_config("generations", "enabled", default=True):
+                # Read and cache the body so downstream can re-read it
+                body = await request.read()
+                # aiohttp caches the result of read() internally, so subsequent
+                # calls to request.read() / request.json() return the same bytes.
+
+                try:
+                    json_data = json_mod.loads(body)
+                except (json_mod.JSONDecodeError, Exception):
+                    json_data = {}
+
+                # Call the original handler
+                response = await handler(request)
+
+                # After successful queue, track the generation
+                if response.status == 200:
+                    try:
+                        resp_body = response.body
+                        if isinstance(resp_body, bytes):
+                            resp_data = json_mod.loads(resp_body)
+                        else:
+                            resp_data = {}
+
+                        prompt_id = resp_data.get("prompt_id", "")
+                        if prompt_id:
+                            workflow_json = None
+                            if get_config("generations", "store_prompts", default=True):
+                                prompt_data = json_data.get("prompt")
+                                if prompt_data:
+                                    workflow_json = json_mod.dumps(prompt_data)
+
+                            await on_prompt_queued(
+                                prompt_id=prompt_id,
+                                user_id=user["id"],
+                                workflow_json=workflow_json,
+                            )
+                    except Exception:
+                        logger.exception("MultiUser: error tracking prompt")
+
+                return response
+
+        return await handler(request)
+
+    # Insert after auth middleware (position 1)
+    prompt_server.app.middlewares.insert(1, prompt_tracking_middleware)
+    logger.info("MultiUser: prompt tracking middleware installed")
+
+
+# Install execution hooks
+_hook_execution_events()
+
+# Install prompt tracking
+_hook_prompt_via_middleware()
+
+# ---------------------------------------------------------------------------
+# Cleanup on shutdown
+# ---------------------------------------------------------------------------
+
+async def _on_shutdown(app):
+    """Cleanly close database connections on server shutdown."""
+    try:
+        await close_db()
+        logger.info("MultiUser: database connections closed")
+    except Exception:
+        logger.exception("MultiUser: error closing database")
+
+prompt_server.app.on_shutdown.append(_on_shutdown)
+
+# ---------------------------------------------------------------------------
+# Module exports for ComfyUI
+# ---------------------------------------------------------------------------
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
