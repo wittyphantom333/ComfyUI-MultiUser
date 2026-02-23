@@ -1,9 +1,12 @@
 """Configuration management for ComfyUI-MultiUser."""
+import logging
 import os
 import secrets
 import yaml
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("comfyui-multiuser.config")
 
 _BASE_DIR = Path(__file__).parent.parent.resolve()
 _config: dict | None = None
@@ -72,16 +75,26 @@ def load_config(force_reload: bool = False) -> dict:
         secret_file = _BASE_DIR / "data" / ".secret_key"
         if secret_file.exists():
             _config["auth"]["secret_key"] = secret_file.read_text().strip()
+            logger.info("Loaded secret key from %s (prefix=%s)",
+                        secret_file, _config["auth"]["secret_key"][:8])
         else:
             new_key = secrets.token_hex(32)
             _config["auth"]["secret_key"] = new_key
             secret_file.parent.mkdir(parents=True, exist_ok=True)
             secret_file.write_text(new_key)
+            logger.warning("Generated NEW secret key (prefix=%s) — saved to %s. "
+                           "Any existing JWTs are now invalid. "
+                           "Set MULTIUSER_SECRET_KEY env var for persistent deployments.",
+                           new_key[:8], secret_file)
             # Restrict permissions (best-effort)
             try:
                 secret_file.chmod(0o600)
             except OSError:
                 pass
+    else:
+        source = "MULTIUSER_SECRET_KEY env" if os.environ.get("MULTIUSER_SECRET_KEY") else "config.yaml"
+        logger.info("Using secret key from %s (prefix=%s)",
+                    source, _config["auth"]["secret_key"][:8])
 
     # Resolve SQLite path
     sqlite_path = _config["database"]["sqlite"]["path"]

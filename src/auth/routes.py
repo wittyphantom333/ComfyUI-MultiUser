@@ -264,7 +264,7 @@ def setup_auth_routes(routes):
         POST bodies are *never* stripped, unlike Authorization headers or
         cookies which proxies can mangle.
         """
-        from .tokens import verify_jwt as _verify_jwt
+        from .tokens import verify_jwt_detailed
 
         try:
             data = await request.json()
@@ -275,10 +275,13 @@ def setup_auth_routes(routes):
         if not token:
             return web.json_response({"error": "Token required"}, status=400)
 
-        payload = _verify_jwt(token)
+        payload, reason = verify_jwt_detailed(token)
         if payload is None:
-            logger.debug("token-verify: JWT invalid or expired")
-            return web.json_response({"error": "Invalid or expired token"}, status=401)
+            logger.debug("token-verify: JWT rejected — %s", reason)
+            return web.json_response(
+                {"error": f"Invalid or expired token", "reason": reason},
+                status=401,
+            )
 
         db = await get_db()
         user = await db.fetchone(

@@ -21,6 +21,7 @@ import { renderAdminSidebar } from "./admin-panel.js";
 /** Shared auth state */
 let _authenticated = false;
 let _currentUser = null;
+let _sidebarTabsRegistered = false;
 
 /** Show a native ComfyUI toast (falls back to console if API unavailable). */
 export function showToast(severity, summary, detail, life = 3000) {
@@ -28,6 +29,47 @@ export function showToast(severity, summary, detail, life = 3000) {
     app.extensionManager.toast.add({ severity, summary, detail, life });
   } catch {
     console.log(`[MultiUser] ${severity}: ${summary} — ${detail}`);
+  }
+}
+
+/**
+ * Register sidebar tabs with ComfyUI's native sidebar.
+ * Guarded so it only executes once.
+ */
+function _registerSidebarTabs() {
+  if (_sidebarTabsRegistered || !_authenticated || !_currentUser) return;
+  _sidebarTabsRegistered = true;
+
+  // ── Register User Profile sidebar tab ──
+  try {
+    app.extensionManager.registerSidebarTab({
+      id: "multiuser-profile",
+      icon: "pi pi-user",
+      title: "MultiUser",
+      tooltip: `Signed in as ${_currentUser.username}`,
+      type: "custom",
+      render: (el) => renderUserSidebar(el, _currentUser),
+    });
+    console.log("[MultiUser] Registered user profile sidebar tab");
+  } catch (e) {
+    console.warn("[MultiUser] Could not register user sidebar tab:", e.message);
+  }
+
+  // ── Register Admin sidebar tab (admins only) ──
+  if (_currentUser.is_admin) {
+    try {
+      app.extensionManager.registerSidebarTab({
+        id: "multiuser-admin",
+        icon: "pi pi-cog",
+        title: "Admin",
+        tooltip: "MultiUser Administration",
+        type: "custom",
+        render: (el) => renderAdminSidebar(el),
+      });
+      console.log("[MultiUser] Registered admin sidebar tab");
+    } catch (e) {
+      console.warn("[MultiUser] Could not register admin sidebar tab:", e.message);
+    }
   }
 }
 
@@ -73,6 +115,10 @@ app.registerExtension({
     console.log("[MultiUser] Authenticated as:", user.username, "admin:", user.is_admin);
 
     await loadPermissions();
+
+    // Register sidebar tabs immediately after auth — don't wait for setup()
+    // because ComfyUI's sidebar may have already rendered by the time setup runs.
+    _registerSidebarTabs();
   },
 
   /**
@@ -90,42 +136,11 @@ app.registerExtension({
 
   /**
    * Called after ComfyUI is fully set up.
-   * Register native UI components (sidebar tabs, bottom panel, etc.).
+   * Attempt registration again in case init() ran before the sidebar was ready.
    */
   async setup() {
-    if (!_authenticated || !_currentUser) return;
-
-    // ── Register User Profile sidebar tab ──
-    try {
-      app.extensionManager.registerSidebarTab({
-        id: "multiuser-profile",
-        icon: "pi pi-user",
-        title: "MultiUser",
-        tooltip: `Signed in as ${_currentUser.username}`,
-        type: "custom",
-        render: (el) => renderUserSidebar(el, _currentUser),
-      });
-    } catch (e) {
-      console.warn("[MultiUser] Could not register user sidebar tab:", e.message);
-    }
-
-    // ── Register Admin sidebar tab (admins only) ──
-    if (_currentUser.is_admin) {
-      try {
-        app.extensionManager.registerSidebarTab({
-          id: "multiuser-admin",
-          icon: "pi pi-cog",
-          title: "Admin",
-          tooltip: "MultiUser Administration",
-          type: "custom",
-          render: (el) => renderAdminSidebar(el),
-        });
-      } catch (e) {
-        console.warn("[MultiUser] Could not register admin sidebar tab:", e.message);
-      }
-    }
-
-    console.log("[MultiUser] Native UI setup complete");
+    _registerSidebarTabs();
+    console.log("[MultiUser] setup() complete");
   },
 
   /**

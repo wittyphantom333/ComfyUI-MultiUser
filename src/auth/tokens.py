@@ -4,7 +4,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import jwt
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("multiuser.tokens")
 def create_jwt(user_id: int, username: str, is_admin: bool = False) -> str:
     """Create a JWT token for session authentication."""
     secret = get_config("auth", "secret_key")
-    expiry_hours = get_config("auth", "token_expiry_hours", default=24)
+    expiry_hours = get_config("auth", "session_lifetime_hours", default=24)
 
     payload = {
         "sub": user_id,
@@ -34,22 +34,41 @@ def create_jwt(user_id: int, username: str, is_admin: bool = False) -> str:
 
 def verify_jwt(token: str) -> Optional[dict[str, Any]]:
     """Verify and decode a JWT token. Returns payload or None."""
+    result, _ = verify_jwt_detailed(token)
+    return result
+
+
+def verify_jwt_detailed(token: str) -> Tuple[Optional[dict[str, Any]], str]:
+    """Verify and decode a JWT token.
+
+    Returns:
+        (payload, reason) — payload is the decoded JWT dict on success (reason="ok"),
+        or None with a human-readable reason string on failure.
+    """
     secret = get_config("auth", "secret_key")
     logger.debug("Verifying JWT, token prefix=%s, secret prefix=%s",
                  token[:20] if token else "NONE", secret[:8] if secret else "NONE")
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
         if payload.get("type") != "session":
+            reason = f"wrong token type: {payload.get('type')}"
             logger.warning("JWT valid but type=%s (expected 'session')", payload.get("type"))
-            return None
+            return None, reason
         logger.debug("JWT verified OK for user %s (id=%s)", payload.get("username"), payload.get("sub"))
-        return payload
+        return payload, "ok"
     except jwt.ExpiredSignatureError:
         logger.info("JWT expired for token prefix=%s", token[:20] if token else "?")
-        return None
+        return None, "token expired"
+    except jwt.InvalidSignatureError:
+        logger.warning("JWT signature mismatch — secret key may have changed. token prefix=%s, secret prefix=%s",
+                        token[:20] if token else "?", secret[:8] if secret else "NONE")
+        return None, "invalid signature (server secret may have changed)"
+    except jwt.DecodeError as e:
+        logger.warning("JWT decode error: %s, token prefix=%s", e, token[:20] if token else "?")
+        return None, f"decode error: {e}"
     except jwt.InvalidTokenError as e:
         logger.warning("JWT invalid: %s, token prefix=%s", e, token[:20] if token else "?")
-        return None
+        return None, f"invalid token: {e}"
 
 
 def generate_api_token() -> tuple[str, str, str]:

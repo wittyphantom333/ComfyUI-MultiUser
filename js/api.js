@@ -159,9 +159,13 @@ export async function getCurrentUser() {
 
       // 401 = token genuinely invalid/expired — clear it (no retry)
       if (res.status === 401) {
-        let detail = "";
-        try { detail = (await res.json()).error || ""; } catch {}
-        console.log("[MultiUser] getCurrentUser: 401 —", detail);
+        let detail = "", reason = "";
+        try {
+          const body = await res.json();
+          detail = body.error || "";
+          reason = body.reason || "";
+        } catch {}
+        console.warn("[MultiUser] getCurrentUser: 401 —", detail, reason ? `(${reason})` : "");
         clearToken();
         return null;
       }
