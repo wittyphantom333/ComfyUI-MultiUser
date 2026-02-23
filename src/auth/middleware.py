@@ -9,49 +9,65 @@ from ..config import get_config
 
 logger = logging.getLogger("comfyui-multiuser.auth.middleware")
 
-# Routes that never require authentication
-ALWAYS_PUBLIC = {
+# ---------------------------------------------------------------------------
+# Instead of blocking everything and whitelisting public routes, we PROTECT
+# specific sensitive routes and let everything else through.  This is critical
+# because ComfyUI's Vue/Vite frontend makes many internal API calls during
+# bootstrap (system_stats, object_info, settings, etc.) *before* any custom
+# extension JS gets a chance to run.  If those calls are blocked the whole
+# UI breaks.  Our login overlay — rendered by the JS extension once it loads
+# — prevents the user from doing anything meaningful without authenticating.
+# ---------------------------------------------------------------------------
+
+# Routes / prefixes that ALWAYS require a valid session.
+# Anything NOT listed here passes through to ComfyUI as normal.
+PROTECTED_EXACT = {
+    # Our own endpoints (except the auth ones listed in AUTH_PUBLIC)
+}
+
+PROTECTED_PREFIXES = (
+    "/multiuser/",        # all multi-user management APIs
+)
+
+# Mutation endpoints in core ComfyUI that must be auth-gated
+PROTECTED_MUTATIONS = {
+    ("POST",   "/prompt"),         # queue a generation
+    ("POST",   "/queue"),          # queue management
+    ("DELETE",  "/queue"),         # clear queue
+    ("POST",   "/upload/image"),   # upload files
+    ("POST",   "/upload/mask"),
+}
+
+# Auth-related routes inside /multiuser/ that must remain public
+AUTH_PUBLIC = {
     "/multiuser/login",
     "/multiuser/register",
     "/multiuser/health",
     "/multiuser/setup-status",
 }
 
-# Route prefixes that are always public.
-# The ComfyUI frontend (HTML, JS, CSS, extensions) must load without auth
-# because the login UI is a JS overlay rendered *inside* the ComfyUI page.
-PUBLIC_PREFIXES = (
-    "/multiuser/static/",
-    "/extensions/",       # custom-node JS (including our own multiuser JS)
-    "/scripts/",          # ComfyUI core JS
-    "/assets/",           # ComfyUI bundled assets (Vite builds, CSS, etc.)
-    "/favicon",           # favicon.ico / favicon.svg
-)
 
-# Exact paths that are part of the frontend shell
-FRONTEND_PATHS = {
-    "/",                  # main ComfyUI page
-}
+def _requires_auth(method: str, path: str) -> bool:
+    """Return True if the given request needs a valid session."""
+    # Auth endpoints are always open
+    if path in AUTH_PUBLIC:
+        return False
 
-
-def _is_public_route(path: str) -> bool:
-    """Check if a route is public (no auth required)."""
-    if path in ALWAYS_PUBLIC:
-        return True
-    if path in FRONTEND_PATHS:
-        return True
-    for prefix in PUBLIC_PREFIXES:
+    # Everything under /multiuser/ is protected
+    for prefix in PROTECTED_PREFIXES:
         if path.startswith(prefix):
             return True
-    # Static file extensions served by the ComfyUI web root
-    if path.rsplit(".", 1)[-1] in ("js", "css", "html", "ico", "svg", "png", "woff", "woff2", "ttf"):
-        # Only allow top-level static assets, not API-like paths
-        if not path.startswith("/api/") and not path.startswith("/multiuser/"):
-            return True
-    # Check config for additional public routes
-    extra = get_config("server", "public_routes", default=[])
+
+    # Specific ComfyUI mutation endpoints
+    if (method, path) in PROTECTED_MUTATIONS:
+        return True
+
+    # Check config for additional protected routes
+    extra = get_config("server", "protected_routes", default=[])
     if path in extra:
         return True
+
+    # Everything else (ComfyUI UI, read-only APIs, static assets) is open
     return False
 
 
@@ -117,44 +133,49 @@ async def _get_user_from_api_token(token: str) -> Optional[dict]:
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
     """Middleware that checks authentication on every request."""
+    method = request.method
     path = request.path
 
-    # Allow public routes
-    if _is_public_route(path):
-        request["multiuser_user"] = None
+    # --- Fast path: route does not need auth ---
+    if not _requires_auth(method, path):
+        # Still attach user info if a valid session exists (best-effort)
+        user = await _try_identify_user(request)
+        request["multiuser_user"] = user  # may be None — that's fine
         return await handler(request)
 
-    # Try to authenticate: first check Authorization header, then cookie
-    user = None
-
-    # 1. Check Authorization header (API tokens and Bearer JWT)
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        if token.startswith("cmu_"):
-            # API token
-            user = await _get_user_from_api_token(token)
-        else:
-            # JWT token
-            user = await _get_user_from_jwt(token)
-
-    # 2. Check cookie
-    if user is None:
-        cookie_token = request.cookies.get("multiuser_session")
-        if cookie_token:
-            user = await _get_user_from_jwt(cookie_token)
+    # --- Protected route: credentials required ---
+    user = await _try_identify_user(request)
 
     if user is None:
-        # Always return 401 JSON — the frontend JS overlay handles
-        # showing the login UI, so we never redirect to a separate page.
         return web.json_response(
             {"error": "Authentication required"},
             status=401
         )
 
-    # Attach user to request for downstream handlers
     request["multiuser_user"] = user
     return await handler(request)
+
+
+async def _try_identify_user(request: web.Request) -> Optional[dict]:
+    """Try to identify the user from headers or cookies (non-failing)."""
+    user = None
+
+    # 1. Authorization header (API tokens / Bearer JWT)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if token.startswith("cmu_"):
+            user = await _get_user_from_api_token(token)
+        else:
+            user = await _get_user_from_jwt(token)
+
+    # 2. Session cookie
+    if user is None:
+        cookie_token = request.cookies.get("multiuser_session")
+        if cookie_token:
+            user = await _get_user_from_jwt(cookie_token)
+
+    return user
 
 
 def install_middleware(app: web.Application) -> None:
