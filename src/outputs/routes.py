@@ -137,26 +137,26 @@ def _file_info(path: Path, output_dir: Path) -> dict:
 
 
 def _has_embedded_workflow(path: Path) -> bool:
-    """Quick check whether a file has *actually* embedded ComfyUI prompt data.
+    """Check whether a file has embedded ComfyUI workflow/prompt data from a
+    *non-obvious* source.  Standard ComfyUI PNGs always embed prompt+workflow
+    data, so marking them all as '+' adds no information.  Instead, '+' is
+    reserved for cases where metadata presence is noteworthy:
 
-    For PNGs: look for the literal PNG tEXt chunk with keyword 'prompt'.
-    For videos: check for a VHS-style .png sidecar that itself has prompt data.
-    For WebP: check EXIF tags ComfyUI uses.
+    - Video with a VHS-style PNG sidecar containing prompt data
+    - Animated WebP with EXIF-embedded prompt JSON
+    - JPEG with EXIF-embedded prompt (unusual for ComfyUI)
+
+    PNGs always return False — the format badge already tells the user it's
+    a PNG, and they can always click for metadata.
     """
     ext = path.suffix.lower()
     try:
+        # PNGs: ComfyUI always embeds prompt+workflow, so '+' is meaningless
         if ext == ".png":
-            # PNG tEXt chunks: 4-byte length + "tEXt" + keyword + null + data.
-            # We look for the exact bytes: tEXt chunk with keyword "prompt\x00".
-            # This avoids false-positives from filenames or other data
-            # that might coincidentally contain the word "prompt".
-            with open(path, "rb") as fh:
-                data = fh.read(262144)  # 256KB covers most prompt chunks
-            # Look for: tEXtprompt\x00  or  iTXtprompt\x00
-            return b"tEXtprompt\x00" in data or b"iTXtprompt\x00" in data
+            return False
 
         if ext in VIDEO_EXTS:
-            # VHS sidecar PNG — only count if the sidecar itself has prompt data
+            # VHS sidecar PNG — noteworthy because videos don't natively carry workflow
             sidecar = path.with_suffix(".png")
             if sidecar.exists() and sidecar.is_file():
                 with open(sidecar, "rb") as fh:
@@ -169,7 +169,6 @@ def _has_embedded_workflow(path: Path) -> bool:
             img = _PILImage.open(path)
             exif = img.getexif()
             if exif:
-                # ComfyUI stores prompt JSON in EXIF 0x0110 — verify it looks like JSON
                 val = exif.get(0x0110, "")
                 if isinstance(val, str) and val.strip().startswith("{"):
                     return True
