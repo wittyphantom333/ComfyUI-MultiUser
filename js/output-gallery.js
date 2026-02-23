@@ -91,9 +91,15 @@ const CSS = `
 /* Badges */
 .mu-badge{
   position:absolute;background:rgba(0,0,0,.65);border-radius:2px;
-  padding:1px 4px;font-size:8px;font-weight:700;
+  padding:1px 4px;font-size:8px;font-weight:700;letter-spacing:.3px;
 }
-.mu-badge-vid{top:3px;right:3px;color:#ffb86c}
+.mu-badge-fmt{
+  top:3px;right:3px;color:#aab;
+  border:1px solid rgba(255,255,255,.12);border-radius:3px;
+  padding:1px 5px;font-size:8px;font-weight:700;
+  background:rgba(0,0,0,.6);backdrop-filter:blur(2px);
+}
+.mu-badge-fmt.has-meta{color:#6ddb8a;border-color:rgba(109,219,138,.3);background:rgba(109,219,138,.1)}
 .mu-badge-tag{top:3px;left:3px;color:#5ba3d9}
 
 /* === Context menu === */
@@ -490,9 +496,13 @@ function _renderGrid(grid) {
     img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // video badge
-    if (f.type === "video") {
-      const b = _mk("div","mu-badge mu-badge-vid"); b.textContent = "▶ VID"; item.appendChild(b);
+    // format badge (PNG, PNG+, MP4, MP4+, etc.)
+    {
+      const fmt = f.format || f.filename.split(".").pop().toUpperCase();
+      const label = f.has_meta ? fmt + "+" : fmt;
+      const b = _mk("div","mu-badge mu-badge-fmt" + (f.has_meta ? " has-meta" : ""));
+      b.textContent = label;
+      item.appendChild(b);
     }
     // tag count badge
     if (f.tags?.length) {
