@@ -1,7 +1,7 @@
 """SQL schema and migrations for ComfyUI-MultiUser."""
 
 # Schema version - increment when adding migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Base schema (version 1)
 SCHEMA_V1 = [
@@ -156,6 +156,55 @@ SCHEMA_V1 = [
     INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
     VALUES ((SELECT id FROM groups WHERE name = 'users'), 'node', '*', 'allow', 0)
     """,
+
+    # ── Per-user workflow storage ──
+    """
+    CREATE TABLE IF NOT EXISTS user_workflows (
+        id INTEGER PRIMARY KEY {autoincrement},
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT,
+        workflow_json TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_user_workflows_user ON user_workflows(user_id)",
+
+    # ── Feature & model permissions for admin group ──
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'admin'), 'feature', '*', 'allow', 1000)
+    """,
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'admin'), 'model', '*', 'allow', 1000)
+    """,
+
+    # ── Feature permissions for default users group ──
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'queue', 'allow', 0)
+    """,
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'upload', 'allow', 0)
+    """,
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'history', 'allow', 0)
+    """,
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'workflows', 'allow', 0)
+    """,
+
+    # ── Model access for default users group ──
+    """
+    INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+    VALUES ((SELECT id FROM groups WHERE name = 'users'), 'model', '*', 'allow', 0)
+    """,
 ]
 
 
@@ -183,11 +232,69 @@ def get_schema_sql(backend: str = "sqlite") -> list[str]:
 
 # Migration functions for future schema versions
 MIGRATIONS: dict[int, list[str]] = {
-    # Example: version 2 would add new tables/columns
-    # 2: [
-    #     "ALTER TABLE users ADD COLUMN avatar_url TEXT",
-    # ],
+    2: [
+        # ── Per-user workflow storage ──
+        """
+        CREATE TABLE IF NOT EXISTS user_workflows (
+            id INTEGER PRIMARY KEY {autoincrement},
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            workflow_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_user_workflows_user ON user_workflows(user_id)",
+
+        # ── Feature & model permissions for admin group ──
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'admin'), 'feature', '*', 'allow', 1000)
+        """,
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'admin'), 'model', '*', 'allow', 1000)
+        """,
+
+        # ── Feature permissions for default users group ──
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'queue', 'allow', 0)
+        """,
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'upload', 'allow', 0)
+        """,
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'history', 'allow', 0)
+        """,
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'users'), 'feature', 'workflows', 'allow', 0)
+        """,
+
+        # ── Model access for default users group ──
+        """
+        INSERT OR IGNORE INTO permissions (group_id, resource_type, resource_pattern, action, priority)
+        VALUES ((SELECT id FROM groups WHERE name = 'users'), 'model', '*', 'allow', 0)
+        """,
+    ],
 }
+
+
+def _apply_backend_adjustments(sql: str, backend: str) -> str:
+    """Apply backend-specific SQL adjustments to a single statement."""
+    if backend == "sqlite":
+        sql = sql.replace("{autoincrement}", "AUTOINCREMENT")
+    else:
+        sql = sql.replace("{autoincrement}", "GENERATED ALWAYS AS IDENTITY")
+        sql = sql.replace("INSERT OR IGNORE", "INSERT INTO")
+        if "INSERT INTO" in sql:
+            sql += " ON CONFLICT DO NOTHING"
+    return sql
 
 
 def get_migrations_for_version(current: int, target: int, backend: str = "sqlite") -> list[str]:
@@ -196,7 +303,5 @@ def get_migrations_for_version(current: int, target: int, backend: str = "sqlite
     for version in range(current + 1, target + 1):
         if version in MIGRATIONS:
             for sql in MIGRATIONS[version]:
-                if backend == "postgres":
-                    sql = sql.replace("INSERT OR IGNORE", "INSERT INTO")
-                migrations.append(sql)
+                migrations.append(_apply_backend_adjustments(sql, backend))
     return migrations

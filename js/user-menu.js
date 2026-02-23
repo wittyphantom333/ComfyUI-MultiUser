@@ -6,6 +6,7 @@
  */
 
 import { apiGet, apiPost, clearToken, authHeaders } from "./api.js";
+import { buildWorkflowSection } from "./workflow-manager.js";
 
 const TOKEN_KEY = "multiuser_token";
 
@@ -297,6 +298,20 @@ export function renderUserSidebar(el, user) {
   `;
 
   el.appendChild(container);
+
+  // ── Insert My Workflows section ──
+  try {
+    const wfSection = buildWorkflowSection();
+    // Insert before the hidden API Tokens section
+    const tokensSection = container.querySelector("#mu-tokens-section");
+    if (tokensSection) {
+      container.insertBefore(wfSection, tokensSection);
+    } else {
+      container.appendChild(wfSection);
+    }
+  } catch (e) {
+    console.warn("[MultiUser] Could not render workflow section:", e.message);
+  }
 
   // ── Bind actions ──
 

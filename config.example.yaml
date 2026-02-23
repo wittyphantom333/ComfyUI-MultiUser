@@ -84,6 +84,22 @@ generations:
   # Store full prompt JSON in history
   store_prompts: true
 
+# User workspace isolation
+isolation:
+  # Prefix each user's SaveImage output with their username, so outputs
+  # go to  output/{username}/ instead of the shared output/ directory.
+  per_user_outputs: true
+
+  # Restrict non-admin users to viewing only their own output images.
+  restrict_output_access: true
+
+  # Restrict non-admin users to seeing only their own execution history
+  # in ComfyUI's /history endpoint.
+  restrict_history_access: true
+
+  # Enable server-side per-user workflow storage (/multiuser/workflows API).
+  per_user_workflows: true
+
 # Server settings
 server:
   # Routes that don't require authentication

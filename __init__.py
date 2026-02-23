@@ -18,6 +18,8 @@ from .src.groups.routes import setup_group_routes
 from .src.permissions.routes import setup_permission_routes
 from .src.tokens.routes import setup_ext_token_routes
 from .src.generations.routes import setup_generation_routes
+from .src.workflows.routes import setup_workflow_routes
+from .src.isolation.middleware import install_isolation_middleware
 from .src.generations.tracker import (
     on_prompt_queued,
     on_prompt_started,
@@ -78,6 +80,7 @@ setup_group_routes(routes)
 setup_permission_routes(routes)
 setup_ext_token_routes(routes)
 setup_generation_routes(routes)
+setup_workflow_routes(routes)
 
 logger.info("MultiUser: all API routes registered")
 
@@ -86,6 +89,7 @@ logger.info("MultiUser: all API routes registered")
 # ---------------------------------------------------------------------------
 
 install_middleware(prompt_server.app)
+install_isolation_middleware(prompt_server.app)
 
 # ---------------------------------------------------------------------------
 # Database initialisation (runs in background at startup)
@@ -224,8 +228,9 @@ def _hook_prompt_via_middleware():
 
         return await handler(request)
 
-    # Insert after auth middleware (position 1)
-    prompt_server.app.middlewares.insert(1, prompt_tracking_middleware)
+    # Insert after auth + isolation middleware (position 2) so output-
+    # rewriting happens before we record the prompt for tracking.
+    prompt_server.app.middlewares.insert(2, prompt_tracking_middleware)
     logger.info("MultiUser: prompt tracking middleware installed")
 
 
