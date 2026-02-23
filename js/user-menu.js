@@ -372,7 +372,7 @@ async function _loadTokens(container) {
   const list = container.querySelector("#mu-tokens-list");
   if (!list) return;
   try {
-    const res = await apiGet("/my-tokens");
+    const res = await apiGet("/api-tokens");
     const data = await res.json();
     const tokens = data.tokens || [];
     if (tokens.length === 0) {
@@ -394,7 +394,7 @@ async function _loadTokens(container) {
         const { apiDelete } = await import("./api.js");
         const { showToast } = await import("./multiuser.js");
         try {
-          await apiDelete(`/my-tokens/${btn.dataset.tokenId}`);
+          await apiDelete(`/api-tokens/${btn.dataset.tokenId}`);
           showToast("success", "Token", "Token revoked");
           _loadTokens(container);
         } catch (e) {
@@ -451,7 +451,7 @@ async function _createApiToken(container) {
   const { showToast } = await import("./multiuser.js");
   const name = prompt("Token name (optional):");
   try {
-    const res = await apiPost("/my-tokens", { name: name || "API Token" });
+    const res = await apiPost("/api-tokens", { name: name || "API Token" });
     const data = await res.json();
     if (res.ok && data.token) {
       // Show the token once — it can't be retrieved again
