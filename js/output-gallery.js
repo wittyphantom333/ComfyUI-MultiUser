@@ -113,13 +113,19 @@ const CSS = `
 .mu-badge-fmt[data-fmt="AVI"]{color:#78909c;border-color:rgba(120,144,156,.3)}
 .mu-badge-fmt[data-fmt="BMP"]{color:#9e9e9e;border-color:rgba(158,158,158,.3)}
 .mu-badge-fmt[data-fmt="TIFF"]{color:#a1887f;border-color:rgba(161,136,127,.3)}
-/* Collision "+" badge highlight — overrides per-format colors */
-.mu-badge-fmt.collision{
-  color:#ffb74d !important;
-  border-color:rgba(255,183,77,.6) !important;
-  background:rgba(60,40,0,.85);
-  text-shadow:0 0 6px rgba(255,183,77,.5);
-}
+/* Collision "+" per-format — brighter/saturated variant of each format color */
+.mu-badge-fmt.collision{background:rgba(40,40,40,.9);text-shadow:0 0 6px currentColor}
+.mu-badge-fmt.collision[data-fmt="PNG"]{color:#a5d6a7;border-color:rgba(165,214,167,.6)}
+.mu-badge-fmt.collision[data-fmt="JPG"],.mu-badge-fmt.collision[data-fmt="JPEG"]{color:#ffcc80;border-color:rgba(255,204,128,.6)}
+.mu-badge-fmt.collision[data-fmt="WEBP"]{color:#90caf9;border-color:rgba(144,202,249,.6)}
+.mu-badge-fmt.collision[data-fmt="GIF"]{color:#ce93d8;border-color:rgba(206,147,216,.6)}
+.mu-badge-fmt.collision[data-fmt="MP4"]{color:#ef9a9a;border-color:rgba(239,154,154,.6)}
+.mu-badge-fmt.collision[data-fmt="WEBM"]{color:#f48fb1;border-color:rgba(244,143,177,.6)}
+.mu-badge-fmt.collision[data-fmt="MOV"]{color:#ffab91;border-color:rgba(255,171,145,.6)}
+.mu-badge-fmt.collision[data-fmt="MKV"]{color:#bcaaa4;border-color:rgba(188,170,164,.6)}
+.mu-badge-fmt.collision[data-fmt="AVI"]{color:#b0bec5;border-color:rgba(176,190,197,.6)}
+.mu-badge-fmt.collision[data-fmt="BMP"]{color:#e0e0e0;border-color:rgba(224,224,224,.6)}
+.mu-badge-fmt.collision[data-fmt="TIFF"]{color:#d7ccc8;border-color:rgba(215,204,200,.6)}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
