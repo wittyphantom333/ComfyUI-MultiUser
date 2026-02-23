@@ -610,6 +610,20 @@ function _switchTab(container, tab) {
  * Called by ComfyUI's sidebar tab system with a DOM element to populate.
  */
 export function renderAdminSidebar(el) {
+  // Guard: if there's no stored token, show a sign-in prompt instead of
+  // firing API requests that will all 401.
+  const token = localStorage.getItem("multiuser_token");
+  if (!token) {
+    el.innerHTML = `
+      <div style="padding:24px;color:#888;text-align:center;font-family:sans-serif;">
+        <div style="font-size:32px;margin-bottom:12px;">🔒</div>
+        <div style="font-size:14px;margin-bottom:8px;">Not authenticated</div>
+        <div style="font-size:12px;">Please sign in to access the admin panel.</div>
+      </div>
+    `;
+    return;
+  }
+
   _injectStyles();
 
   const container = document.createElement("div");

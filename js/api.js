@@ -50,14 +50,33 @@ export function authHeaders(extra = {}) {
   return headers;
 }
 
+/**
+ * Check if a response is an HTML page (proxy/WAF interception) instead of JSON.
+ * Throws a descriptive error if so.
+ */
+async function _assertJsonResponse(res, path) {
+  if (res.status === 401) {
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("json")) {
+      throw new Error(
+        `Authentication required for ${path} — server returned non-JSON (proxy issue?)`
+      );
+    }
+    let detail = "";
+    try {
+      const body = await res.clone().json();
+      detail = body.error || body.reason || "";
+    } catch {}
+    throw new Error(`Not authenticated${detail ? ": " + detail : ""}`);
+  }
+}
+
 export async function apiGet(path) {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    throw new Error("Not authenticated");
-  }
+  await _assertJsonResponse(res, path);
   return res;
 }
 
@@ -68,9 +87,7 @@ export async function apiPost(path, body = {}) {
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  if (res.status === 401) {
-    throw new Error("Not authenticated");
-  }
+  await _assertJsonResponse(res, path);
   return res;
 }
 

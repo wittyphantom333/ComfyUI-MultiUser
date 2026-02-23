@@ -228,6 +228,22 @@ async function handleSubmit(e, isSetup) {
     const text = await res.text();
     console.log("[MultiUser] Auth response body:", text.substring(0, 200));
 
+    // Detect HTML response (indicates proxy/WAF interception, not our backend)
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json") && text.trimStart().startsWith("<")) {
+      console.error("[MultiUser] Got HTML response instead of JSON. Status:", res.status,
+                    "Content-Type:", contentType);
+      showError(
+        `Server returned an HTML page (status ${res.status}) instead of JSON. ` +
+        "This usually means a reverse proxy, firewall, or ComfyUI's own auth " +
+        "is intercepting the request before it reaches the MultiUser backend. " +
+        "Check your server/proxy configuration."
+      );
+      btn.disabled = false;
+      btn.textContent = isSetup ? "Create Admin Account" : (currentMode === "register" ? "Register" : "Sign In");
+      return;
+    }
+
     let data;
     try {
       data = JSON.parse(text);

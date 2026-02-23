@@ -7,6 +7,8 @@
 
 import { apiGet, apiPost, clearToken, authHeaders } from "./api.js";
 
+const TOKEN_KEY = "multiuser_token";
+
 /** Inline styles scoped to the sidebar tab content. */
 const SIDEBAR_CSS = `
   .mu-sidebar {
@@ -217,6 +219,19 @@ function _injectStyles() {
  * Called by ComfyUI's sidebar tab system with a DOM element to populate.
  */
 export function renderUserSidebar(el, user) {
+  // Guard: if no token or user data, show sign-in prompt
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token || !user) {
+    el.innerHTML = `
+      <div style="padding:24px;color:#888;text-align:center;font-family:sans-serif;">
+        <div style="font-size:32px;margin-bottom:12px;">👤</div>
+        <div style="font-size:14px;margin-bottom:8px;">Not signed in</div>
+        <div style="font-size:12px;">Please sign in to view your profile.</div>
+      </div>
+    `;
+    return;
+  }
+
   _injectStyles();
 
   const container = document.createElement("div");
