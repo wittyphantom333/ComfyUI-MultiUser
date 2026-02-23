@@ -232,34 +232,94 @@ def _read_image_metadata(file_path: Path) -> dict:
 
 
 def _read_video_metadata(file_path: Path) -> dict:
-    """Read video metadata using ffprobe."""
+    """Read video metadata using ffprobe + sidecar/embedded workflow data.
+
+    Sources tried in order:
+    1. ffprobe — container info (duration, codec, fps, dimensions, bitrate)
+    2. ffprobe format tags — ComfyUI/VHS may embed 'prompt' and 'workflow' JSON
+    3. VHS-style PNG sidecar — same base name with .png extension
+    4. Animated WebP EXIF — ComfyUI stores prompt in EXIF tag 0x0110, workflow in 0x010F
+    """
     meta = {}
-    if not _HAS_FFMPEG:
-        return meta
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "quiet",
-                "-print_format", "json",
-                "-show_format", "-show_streams",
-                str(file_path),
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout:
-            data = json.loads(result.stdout)
-            fmt = data.get("format", {})
-            meta["_duration"] = fmt.get("duration", "unknown")
-            meta["_format"] = fmt.get("format_long_name", fmt.get("format_name", ""))
-            meta["_bitrate"] = fmt.get("bit_rate", "")
-            for stream in data.get("streams", []):
-                if stream.get("codec_type") == "video":
-                    meta["_dimensions"] = f"{stream.get('width', '?')}x{stream.get('height', '?')}"
-                    meta["_codec"] = stream.get("codec_long_name", stream.get("codec_name", ""))
-                    meta["_fps"] = stream.get("r_frame_rate", "")
-                    break
-    except Exception as e:
-        logger.debug("Video metadata failed for %s: %s", file_path.name, e)
+    ext = file_path.suffix.lower()
+
+    # ── 1 & 2: ffprobe — container info + metadata tags ──
+    if _HAS_FFMPEG:
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format", "-show_streams",
+                    str(file_path),
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout:
+                data = json.loads(result.stdout)
+                fmt = data.get("format", {})
+                meta["_duration"] = fmt.get("duration", "unknown")
+                meta["_format"] = fmt.get("format_long_name", fmt.get("format_name", ""))
+                meta["_bitrate"] = fmt.get("bit_rate", "")
+                for stream in data.get("streams", []):
+                    if stream.get("codec_type") == "video":
+                        meta["_dimensions"] = f"{stream.get('width', '?')}x{stream.get('height', '?')}"
+                        meta["_codec"] = stream.get("codec_long_name", stream.get("codec_name", ""))
+                        meta["_fps"] = stream.get("r_frame_rate", "")
+                        break
+
+                # Check format tags for embedded prompt/workflow JSON
+                tags = fmt.get("tags", {})
+                for key in ("prompt", "workflow"):
+                    val = tags.get(key)
+                    if val and isinstance(val, str):
+                        try:
+                            meta[key] = json.loads(val)
+                        except (json.JSONDecodeError, TypeError):
+                            meta[key] = val
+        except Exception as e:
+            logger.debug("Video ffprobe failed for %s: %s", file_path.name, e)
+
+    # ── 3: VHS-style PNG sidecar (same directory, same base name + .png) ──
+    if "prompt" not in meta:
+        sidecar = file_path.with_suffix(".png")
+        if sidecar.exists() and sidecar.is_file():
+            try:
+                png_meta = _read_png_metadata(sidecar)
+                if png_meta.get("prompt"):
+                    meta["prompt"] = png_meta["prompt"]
+                    meta["_sidecar"] = sidecar.name
+                if png_meta.get("workflow") and "workflow" not in meta:
+                    meta["workflow"] = png_meta["workflow"]
+            except Exception as e:
+                logger.debug("Video sidecar PNG failed for %s: %s", sidecar.name, e)
+
+    # ── 4: Animated WebP EXIF tags ──
+    if "prompt" not in meta and ext == ".webp" and _HAS_PIL:
+        try:
+            from PIL import Image as _PILImage
+            img = _PILImage.open(file_path)
+            exif = img.getexif()
+            if exif:
+                # ComfyUI stores prompt in EXIF tag 0x0110 (Model)
+                prompt_val = exif.get(0x0110)
+                if prompt_val:
+                    try:
+                        meta["prompt"] = json.loads(prompt_val)
+                    except (json.JSONDecodeError, TypeError):
+                        meta["prompt"] = prompt_val
+                # Workflow in EXIF tag 0x010F (Make)
+                workflow_val = exif.get(0x010F)
+                if workflow_val:
+                    try:
+                        meta["workflow"] = json.loads(workflow_val)
+                    except (json.JSONDecodeError, TypeError):
+                        meta["workflow"] = workflow_val
+            if "_dimensions" not in meta:
+                meta["_dimensions"] = f"{img.width}x{img.height}"
+        except Exception as e:
+            logger.debug("Video WebP EXIF failed for %s: %s", file_path.name, e)
+
     return meta
 
 
@@ -824,6 +884,32 @@ def setup_output_routes(routes):
         # Parse ComfyUI prompt into structured generation info
         emb = meta.get("embedded", {})
         prompt_data = emb.get("prompt")
+
+        # Fallback: look up workflow_json from the generations table
+        # if no embedded prompt data was found
+        if not prompt_data:
+            try:
+                fname = file_path.name
+                rows = await db.fetchall(
+                    "SELECT workflow_json FROM generations "
+                    "WHERE output_paths IS NOT NULL AND status = 'completed' "
+                    "ORDER BY completed_at DESC"
+                )
+                for row in rows:
+                    op = row.get("output_paths") or row["output_paths"]
+                    if op:
+                        try:
+                            paths_list = json.loads(op) if isinstance(op, str) else op
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if isinstance(paths_list, list) and fname in paths_list:
+                            wf = row.get("workflow_json") or row["workflow_json"]
+                            if wf:
+                                prompt_data = json.loads(wf) if isinstance(wf, str) else wf
+                            break
+            except Exception:
+                pass  # DB fallback is best-effort
+
         if isinstance(prompt_data, dict):
             meta["geninfo"] = _parse_comfyui_prompt(prompt_data)
         elif isinstance(prompt_data, str):

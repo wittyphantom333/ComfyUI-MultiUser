@@ -19,6 +19,8 @@ logger = logging.getLogger("comfyui-multiuser.isolation")
 _PROMPT_PATHS = ("/prompt", "/prompt/", "/api/prompt", "/api/prompt/")
 _HISTORY_PREFIXES = ("/history", "/api/history")
 _VIEW_PATHS = ("/view", "/api/view")
+_QUEUE_PATHS = ("/queue", "/queue/", "/api/queue", "/api/queue/")
+_INTERRUPT_PATHS = ("/interrupt", "/interrupt/", "/api/interrupt", "/api/interrupt/")
 
 
 def _is_enabled(key: str) -> bool:
@@ -91,6 +93,28 @@ def install_isolation_middleware(app: web.Application) -> None:
             and _is_enabled("restrict_output_access")
         ):
             return await _filter_view(request, handler, user)
+
+        # ── 4. Restrict /queue to user's own jobs ──
+        if (
+            request.path in _QUEUE_PATHS
+            and user
+            and not user.get("is_admin")
+            and _is_enabled("restrict_history_access")
+        ):
+            if request.method == "GET":
+                return await _filter_queue(request, handler, user)
+            elif request.method == "POST":
+                return await _filter_queue_actions(request, handler, user)
+
+        # ── 5. Restrict /interrupt to user's own running prompt ──
+        if (
+            request.path in _INTERRUPT_PATHS
+            and request.method == "POST"
+            and user
+            and not user.get("is_admin")
+            and _is_enabled("restrict_history_access")
+        ):
+            return await _filter_interrupt(request, handler, user)
 
         return await handler(request)
 
@@ -216,5 +240,165 @@ async def _filter_view(
                 )
             # top_dir isn't a known username → treat as a shared/custom
             # subfolder and allow.
+
+    return await handler(request)
+
+
+# ---------------------------------------------------------------------------
+#  /queue — filter running/pending items to user's own prompt_ids
+# ---------------------------------------------------------------------------
+
+async def _filter_queue(
+    request: web.Request, handler, user: dict
+) -> web.Response:
+    """Filter GET /queue response so non-admins only see their own jobs.
+
+    Queue item format: [number, prompt_id, prompt, extra_data, outputs_to_execute]
+    We use the generations table to identify which prompt_ids belong to the user.
+    Untracked prompts (pre-plugin) are hidden from non-admins for safety.
+    """
+    response = await handler(request)
+
+    if response.status != 200:
+        return response
+
+    try:
+        body = response.body
+        if isinstance(body, bytes):
+            queue_data = json_mod.loads(body)
+        else:
+            queue_data = {}
+    except Exception:
+        return response
+
+    if not isinstance(queue_data, dict):
+        return response
+
+    from ..db.factory import get_db
+    db = await get_db()
+    user_id = user["id"]
+
+    # Get this user's prompt_ids
+    own_prompts = await db.fetchall(
+        "SELECT prompt_id FROM generations WHERE user_id = ?",
+        (user_id,)
+    )
+    own_set = {r["prompt_id"] for r in own_prompts}
+
+    # Filter both running and pending queues
+    for key in ("queue_running", "queue_pending"):
+        items = queue_data.get(key, [])
+        queue_data[key] = [
+            item for item in items
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and item[1] in own_set
+        ]
+
+    return web.json_response(queue_data)
+
+
+async def _filter_queue_actions(
+    request: web.Request, handler, user: dict
+) -> web.Response:
+    """Filter POST /queue (clear/delete) so non-admins only affect their own jobs.
+
+    Body formats:
+      { "clear": true }   → only clear user's own items
+      { "delete": [...] } → only delete user's own prompt_ids
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return await handler(request)
+
+    from ..db.factory import get_db
+    db = await get_db()
+    user_id = user["id"]
+
+    if body.get("clear"):
+        # Instead of clearing everything, delete only user's own items
+        own_prompts = await db.fetchall(
+            "SELECT prompt_id FROM generations WHERE user_id = ? AND status IN ('queued', 'running')",
+            (user_id,)
+        )
+        own_ids = [r["prompt_id"] for r in own_prompts]
+        if not own_ids:
+            return web.json_response({"status": "ok"})
+        # Interact with the queue directly through ComfyUI's API.
+        ps = comfyui_server.PromptServer.instance
+        for pid in own_ids:
+            ps.prompt_queue.delete_queue_item(pid)
+        return web.json_response({"status": "ok"})
+
+    if body.get("delete"):
+        delete_ids = body["delete"]
+        if not isinstance(delete_ids, list):
+            return web.json_response({"error": "Invalid delete list"}, status=400)
+
+        # Filter to only user's own prompt_ids
+        own_prompts = await db.fetchall(
+            "SELECT prompt_id FROM generations WHERE user_id = ?",
+            (user_id,)
+        )
+        own_set = {r["prompt_id"] for r in own_prompts}
+        allowed = [pid for pid in delete_ids if pid in own_set]
+
+        if not allowed:
+            return web.json_response({"status": "ok"})
+
+        # Delete only the allowed items
+        ps = comfyui_server.PromptServer.instance
+        for pid in allowed:
+            ps.prompt_queue.delete_queue_item(pid)
+        return web.json_response({"status": "ok"})
+
+    return await handler(request)
+
+
+async def _filter_interrupt(
+    request: web.Request, handler, user: dict
+) -> web.Response:
+    """Filter POST /interrupt so non-admins can only interrupt their own running prompt."""
+    from ..db.factory import get_db
+    db = await get_db()
+    user_id = user["id"]
+
+    # Check if there's a target prompt_id in the body
+    try:
+        body = await request.json()
+        target_pid = body.get("prompt_id")
+    except Exception:
+        target_pid = None
+
+    if target_pid:
+        # Verify user owns this prompt
+        owner = await db.fetchone(
+            "SELECT user_id FROM generations WHERE prompt_id = ?",
+            (target_pid,)
+        )
+        if owner and owner["user_id"] != user_id:
+            return web.json_response(
+                {"error": "Cannot interrupt another user's generation"},
+                status=403,
+            )
+
+    # If no target prompt_id, ComfyUI interrupts the currently running prompt.
+    # Check if the currently running prompt belongs to this user.
+    if not target_pid:
+        ps = comfyui_server.PromptServer.instance
+        current_queue = ps.prompt_queue.get_current_queue()
+        running = current_queue[0] if current_queue else []  # queue_running
+        if running:
+            for item in running:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    running_pid = item[1]
+                    owner = await db.fetchone(
+                        "SELECT user_id FROM generations WHERE prompt_id = ?",
+                        (running_pid,)
+                    )
+                    if owner and owner["user_id"] != user_id:
+                        return web.json_response(
+                            {"error": "Cannot interrupt — another user's generation is running"},
+                            status=403,
+                        )
 
     return await handler(request)
