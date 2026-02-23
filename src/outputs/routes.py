@@ -137,42 +137,53 @@ def _file_info(path: Path, output_dir: Path) -> dict:
 
 
 def _has_embedded_workflow(path: Path) -> bool:
-    """Quick check whether a file has an embedded ComfyUI workflow.
+    """Quick check whether a file has *actually* embedded ComfyUI prompt data.
 
-    For PNGs: scan binary for the 'prompt' tEXt chunk keyword (very fast).
-    For videos: check for a VHS-style .png sidecar file.
-    For WebP: check for EXIF tags that ComfyUI uses.
+    For PNGs: look for the literal PNG tEXt chunk with keyword 'prompt'.
+    For videos: check for a VHS-style .png sidecar that itself has prompt data.
+    For WebP: check EXIF tags ComfyUI uses.
     """
     ext = path.suffix.lower()
     try:
         if ext == ".png":
-            # PNG tEXt chunks: keyword is ASCII followed by a null byte.
-            # Reading first 64KB is usually enough; ComfyUI writes the
-            # 'prompt' chunk early in the file.
+            # PNG tEXt chunks: 4-byte length + "tEXt" + keyword + null + data.
+            # We look for the exact bytes: tEXt chunk with keyword "prompt\x00".
+            # This avoids false-positives from filenames or other data
+            # that might coincidentally contain the word "prompt".
             with open(path, "rb") as fh:
-                head = fh.read(65536)
-            return b"prompt\x00" in head or b"prompt" in head and b"tEXt" in head
+                data = fh.read(262144)  # 256KB covers most prompt chunks
+            # Look for: tEXtprompt\x00  or  iTXtprompt\x00
+            return b"tEXtprompt\x00" in data or b"iTXtprompt\x00" in data
 
         if ext in VIDEO_EXTS:
-            # VHS sidecar PNG
+            # VHS sidecar PNG — only count if the sidecar itself has prompt data
             sidecar = path.with_suffix(".png")
-            return sidecar.exists()
+            if sidecar.exists() and sidecar.is_file():
+                with open(sidecar, "rb") as fh:
+                    sdata = fh.read(262144)
+                return b"tEXtprompt\x00" in sdata or b"iTXtprompt\x00" in sdata
+            return False
 
         if ext == ".webp" and _HAS_PIL:
             from PIL import Image as _PILImage
             img = _PILImage.open(path)
             exif = img.getexif()
-            if exif and (exif.get(0x0110) or exif.get(0x010F)):
-                return True
-
-        if ext in (".jpg", ".jpeg"):
-            # JPEG ComfyUI metadata stored in EXIF UserComment
-            if _HAS_PIL:
-                from PIL import Image as _PILImage
-                img = _PILImage.open(path)
-                exif = img.getexif()
-                if exif and exif.get(0x9286):  # UserComment
+            if exif:
+                # ComfyUI stores prompt JSON in EXIF 0x0110 — verify it looks like JSON
+                val = exif.get(0x0110, "")
+                if isinstance(val, str) and val.strip().startswith("{"):
                     return True
+            return False
+
+        if ext in (".jpg", ".jpeg") and _HAS_PIL:
+            from PIL import Image as _PILImage
+            img = _PILImage.open(path)
+            exif = img.getexif()
+            if exif:
+                val = exif.get(0x9286, "")  # UserComment
+                if isinstance(val, str) and val.strip().startswith("{"):
+                    return True
+            return False
     except Exception:
         pass
     return False
@@ -188,30 +199,11 @@ async def _detect_workflow_batch(files: list[dict], output_dir: Path) -> None:
     if not files:
         return
 
-    # Pass 1: check generations DB for filenames that have stored workflow
-    try:
-        from ..db.factory import get_db
-        db = await get_db()
-        rows = await db.fetchall(
-            "SELECT output_paths, workflow_json FROM generations "
-            "WHERE output_paths IS NOT NULL AND workflow_json IS NOT NULL"
-        )
-        db_files: set[str] = set()
-        for row in rows:
-            try:
-                paths = json.loads(row["output_paths"]) if isinstance(row["output_paths"], str) else row["output_paths"]
-                if isinstance(paths, list):
-                    db_files.update(paths)
-            except (json.JSONDecodeError, TypeError):
-                pass
+    # The generations DB stores workflow_json for ALL tracked prompts
+    # (when store_prompts is enabled), so it can't distinguish files with
+    # real embedded metadata from those without.  Skip the DB pass entirely
+    # and rely on the per-file binary check which is accurate.
 
-        for f in files:
-            if f["filename"] in db_files:
-                f["has_meta"] = True
-    except Exception:
-        pass
-
-    # Pass 2: for files not yet marked, do a quick per-file check
     for f in files:
         if f["has_meta"]:
             continue

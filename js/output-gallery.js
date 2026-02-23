@@ -90,17 +90,22 @@ const CSS = `
 
 /* Badges */
 .mu-badge{
-  position:absolute;background:rgba(0,0,0,.65);border-radius:2px;
-  padding:1px 4px;font-size:8px;font-weight:700;letter-spacing:.3px;
+  position:absolute;border-radius:3px;
+  padding:2px 5px;font-size:8px;font-weight:700;letter-spacing:.4px;
+  line-height:1;
 }
 .mu-badge-fmt{
-  top:3px;right:3px;color:#aab;
-  border:1px solid rgba(255,255,255,.12);border-radius:3px;
-  padding:1px 5px;font-size:8px;font-weight:700;
-  background:rgba(0,0,0,.6);backdrop-filter:blur(2px);
+  top:4px;right:4px;
+  color:#bbc;background:rgba(0,0,0,.75);
+  border:1px solid rgba(255,255,255,.15);
+  text-shadow:0 1px 2px rgba(0,0,0,.8);
 }
-.mu-badge-fmt.has-meta{color:#6ddb8a;border-color:rgba(109,219,138,.3);background:rgba(109,219,138,.1)}
-.mu-badge-tag{top:3px;left:3px;color:#5ba3d9}
+.mu-badge-fmt.has-meta{
+  color:#2d2d2d;background:rgba(100,220,130,.88);
+  border-color:rgba(100,220,130,.5);
+  text-shadow:none;
+}
+.mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 
 /* === Context menu === */
 .mu-ctx{
