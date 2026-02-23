@@ -19,7 +19,6 @@ export function storeToken(token) {
   if (!token) return;
   localStorage.setItem(TOKEN_KEY, token);
   document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; path=/; SameSite=Lax; max-age=${COOKIE_MAX_AGE}`;
-  console.log("[MultiUser] Token stored in localStorage + cookie");
 }
 
 /** Remove stored token everywhere (logout). */
@@ -35,7 +34,6 @@ export function clearToken() {
     const hasCookie = document.cookie.split(";").some(c => c.trim().startsWith(COOKIE_NAME + "="));
     if (!hasCookie) {
       document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; path=/; SameSite=Lax; max-age=${COOKIE_MAX_AGE}`;
-      console.log("[MultiUser] Re-set cookie from localStorage on page load");
     }
   }
 })();
@@ -142,15 +140,9 @@ function _sleep(ms) {
  */
 export async function getCurrentUser() {
   const token = localStorage.getItem(TOKEN_KEY);
-  if (!token) {
-    console.log("[MultiUser] getCurrentUser: no token in localStorage");
-    return null;
-  }
+  if (!token) return null;
 
-  // Quick sanity check: a JWT has 3 dot-separated parts
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    console.warn("[MultiUser] getCurrentUser: token is not a valid JWT format, clearing");
+  if (token.split(".").length !== 3) {
     clearToken();
     return null;
   }
@@ -158,7 +150,6 @@ export async function getCurrentUser() {
   const MAX_RETRIES = 3;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[MultiUser] getCurrentUser: attempt ${attempt}/${MAX_RETRIES}`);
       const res = await fetch(`${API_BASE}/token-verify`, {
         method: "POST",
         credentials: "include",
@@ -168,41 +159,25 @@ export async function getCurrentUser() {
 
       if (res.ok) {
         const data = await res.json();
-        if (data && data.username) {
-          console.log("[MultiUser] getCurrentUser: verified as", data.username);
-          return data;
-        }
-        console.warn("[MultiUser] getCurrentUser: response OK but missing username", data);
+        if (data && data.username) return data;
         return null;
       }
 
       // 401 = token genuinely invalid/expired — clear it (no retry)
       if (res.status === 401) {
-        let detail = "", reason = "";
-        try {
-          const body = await res.json();
-          detail = body.error || "";
-          reason = body.reason || "";
-        } catch {}
-        console.warn("[MultiUser] getCurrentUser: 401 —", detail, reason ? `(${reason})` : "");
         clearToken();
         return null;
       }
 
       // 5xx = server error (DB not ready, etc.) — retry
       if (res.status >= 500 && attempt < MAX_RETRIES) {
-        console.warn(`[MultiUser] getCurrentUser: ${res.status}, retrying in ${attempt}s...`);
         await _sleep(attempt * 1000);
         continue;
       }
 
-      // Other non-OK response — log and give up
-      console.warn("[MultiUser] getCurrentUser: unexpected status", res.status);
       return null;
 
     } catch (e) {
-      // Network error — retry with back-off
-      console.warn(`[MultiUser] getCurrentUser: fetch error (attempt ${attempt}):`, e.message);
       if (attempt < MAX_RETRIES) {
         await _sleep(attempt * 1000);
         continue;
