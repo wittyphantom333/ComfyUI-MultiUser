@@ -43,6 +43,12 @@ def install_isolation_middleware(app: web.Application) -> None:
         # Tag the prompt_server with the current username so the
         # on_prompt_handler (registered in __init__.py) can rewrite
         # filename_prefix before ComfyUI queues the prompt.
+        if request.method == "POST" and "prompt" in request.path:
+            print(
+                f"[ISOLATION MW DEBUG] path={request.path!r} "
+                f"user={user.get('username') if user else None} "
+                f"per_user={_is_enabled('per_user_outputs')}"
+            )
         if (
             request.method == "POST"
             and request.path in ("/prompt", "/prompt/")
