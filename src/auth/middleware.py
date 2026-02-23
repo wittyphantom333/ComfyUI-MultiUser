@@ -146,7 +146,7 @@ async def auth_middleware(request: web.Request, handler):
     # --- Fast path: route does not need auth ---
     if not _requires_auth(method, path):
         # Still attach user info if a valid session exists (best-effort)
-        user = await _try_identify_user(request)
+        user = await _try_identify_user(request, quiet=True)
         request["multiuser_user"] = user  # may be None — that's fine
         return await handler(request)
 
@@ -165,13 +165,19 @@ async def auth_middleware(request: web.Request, handler):
     return await handler(request)
 
 
-async def _try_identify_user(request: web.Request) -> Optional[dict]:
+async def _try_identify_user(request: web.Request, quiet: bool = False) -> Optional[dict]:
     """Try to identify the user from headers or cookies (non-failing).
 
-    Checks three sources in order:
+    Checks four sources in order:
       1. Authorization: Bearer header  (standard, but proxies may strip it)
       2. multiuser_session cookie      (HttpOnly, set by server Set-Cookie)
       3. multiuser_token cookie         (JS-set, bypasses proxy Set-Cookie issues)
+      4. X-MultiUser-Token header
+
+    Args:
+        quiet: If True, suppress warnings for failed auth attempts (used on
+               non-protected routes where other extensions may send their own
+               Bearer tokens that are not ours).
     """
     user = None
 
@@ -184,11 +190,18 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
             if user is None:
                 logger.debug("API token verification failed for %s (prefix=%s)",
                             request.path, token[:12])
-        else:
+        elif "." in token and len(token.split(".")) == 3:
+            # Only attempt JWT decode if it looks like a JWT (three dot-
+            # separated segments).  Other extensions (Majoor, etc.) may send
+            # their own opaque Bearer tokens — skip those silently.
             user = await _get_user_from_jwt(token)
-            if user is None:
+            if user is None and not quiet:
                 logger.warning("Bearer JWT failed for %s %s (token_len=%d)",
                              request.method, request.path, len(token))
+        else:
+            # Non-JWT, non-cmu_ Bearer token — belongs to another extension
+            logger.debug("Ignoring non-JWT Bearer token for %s %s (len=%d)",
+                        request.method, request.path, len(token))
 
     # 2. HttpOnly session cookie (set by server)
     if user is None:
@@ -222,14 +235,16 @@ async def _try_identify_user(request: web.Request) -> Optional[dict]:
             else:
                 logger.debug("Auth via X-MultiUser-Token header for %s %s", request.method, request.path)
 
-    if user is None:
-        has_creds = bool(auth_header or request.cookies.get("multiuser_session")
-                         or request.cookies.get("multiuser_token")
-                         or request.headers.get("X-MultiUser-Token"))
+    if user is None and not quiet:
+        has_creds = bool(
+            request.cookies.get("multiuser_session")
+            or request.cookies.get("multiuser_token")
+            or request.headers.get("X-MultiUser-Token")
+        )
         if has_creds:
-            logger.warning("All auth methods failed for %s %s (auth_hdr=%s, session_cookie=%s, js_cookie=%s, x_header=%s)",
+            logger.warning("All auth methods failed for %s %s (session_cookie=%s, js_cookie=%s, x_header=%s)",
                            request.method, request.path,
-                           bool(auth_header), bool(request.cookies.get("multiuser_session")),
+                           bool(request.cookies.get("multiuser_session")),
                            bool(request.cookies.get("multiuser_token")),
                            bool(request.headers.get("X-MultiUser-Token")))
 
