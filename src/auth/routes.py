@@ -256,6 +256,55 @@ def setup_auth_routes(routes):
         _clear_session_cookie(response)
         return response
 
+    @routes.post("/multiuser/token-verify")
+    async def token_verify(request: web.Request):
+        """Verify a JWT token sent in the request body.
+
+        This is the most reliable auth check behind reverse proxies because
+        POST bodies are *never* stripped, unlike Authorization headers or
+        cookies which proxies can mangle.
+        """
+        from .tokens import verify_jwt as _verify_jwt
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        token = data.get("token", "")
+        if not token:
+            return web.json_response({"error": "Token required"}, status=400)
+
+        payload = _verify_jwt(token)
+        if payload is None:
+            logger.debug("token-verify: JWT invalid or expired")
+            return web.json_response({"error": "Invalid or expired token"}, status=401)
+
+        db = await get_db()
+        user = await db.fetchone(
+            "SELECT id, username, is_admin, is_active FROM users WHERE id = ?",
+            (payload["sub"],)
+        )
+        if user is None or not user["is_active"]:
+            return web.json_response({"error": "User not found or disabled"}, status=401)
+
+        # Get groups
+        groups = await db.fetchall(
+            """SELECT g.id, g.name, g.description
+               FROM groups g
+               JOIN group_members gm ON g.id = gm.group_id
+               WHERE gm.user_id = ?""",
+            (user["id"],)
+        )
+
+        logger.debug("token-verify: OK for user %s", user["username"])
+        return web.json_response({
+            "id": user["id"],
+            "username": user["username"],
+            "is_admin": bool(user["is_admin"]),
+            "groups": [{"id": g["id"], "name": g["name"], "description": g["description"]} for g in groups],
+        })
+
     @routes.get("/multiuser/me")
     async def me(request: web.Request):
         """Get current user info."""

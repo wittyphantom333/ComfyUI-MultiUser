@@ -44,6 +44,7 @@ AUTH_PUBLIC = {
     "/multiuser/register",
     "/multiuser/health",
     "/multiuser/setup-status",
+    "/multiuser/token-verify",
 }
 
 

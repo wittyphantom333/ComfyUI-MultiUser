@@ -112,14 +112,35 @@ export async function checkSetupStatus() {
 
 /**
  * Get current user info.  Returns null when not authenticated.
+ *
+ * Uses POST /token-verify with the token in the request body.
+ * This is the most reliable method behind reverse proxies because POST
+ * bodies are never stripped (unlike Authorization headers or cookies).
  */
 export async function getCurrentUser() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    console.log("[MultiUser] getCurrentUser: no token in localStorage");
+    return null;
+  }
+
   try {
-    const res = await apiGet("/me");
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    // apiGet throws on 401 — that's fine, just means not logged in
+    const res = await fetch(`${API_BASE}/token-verify`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) {
+      console.log("[MultiUser] getCurrentUser: token-verify returned", res.status);
+      if (res.status === 401) clearToken();
+      return null;
+    }
+    const user = await res.json();
+    console.log("[MultiUser] getCurrentUser: verified as", user.username);
+    return user;
+  } catch (e) {
+    console.warn("[MultiUser] getCurrentUser: fetch error", e.message);
     return null;
   }
 }
