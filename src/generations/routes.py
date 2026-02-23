@@ -84,43 +84,7 @@ def setup_generation_routes(routes):
             "pages": (total + per_page - 1) // per_page if total else 0,
         })
 
-    @routes.get("/multiuser/generations/{gen_id}")
-    async def get_generation(request: web.Request):
-        """Get a specific generation with full details including workflow JSON."""
-        user = request.get("multiuser_user")
-        if not user:
-            return web.json_response({"error": "Not authenticated"}, status=401)
-
-        gen_id = int(request.match_info["gen_id"])
-        db = await get_db()
-
-        gen = await db.fetchone(
-            """SELECT g.*, u.username
-               FROM generations g
-               LEFT JOIN users u ON g.user_id = u.id
-               WHERE g.id = ?""",
-            (gen_id,)
-        )
-        if not gen:
-            return web.json_response({"error": "Generation not found"}, status=404)
-
-        # Non-admins can only view their own
-        if gen["user_id"] != user["id"] and not user.get("is_admin"):
-            return web.json_response({"error": "Not authorized"}, status=403)
-
-        if gen.get("output_paths"):
-            try:
-                gen["output_paths"] = json.loads(gen["output_paths"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if gen.get("workflow_json"):
-            try:
-                gen["workflow_json"] = json.loads(gen["workflow_json"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        return web.json_response(gen)
+    # ── Static sub-routes MUST be registered before the {gen_id} wildcard ──
 
     @routes.get("/multiuser/generations/stats")
     async def generation_stats(request: web.Request):
@@ -157,6 +121,72 @@ def setup_generation_routes(routes):
 
         return web.json_response(stats or {})
 
+    @routes.get("/multiuser/generations/my-stats")
+    async def generation_my_stats(request: web.Request):
+        """Alias for /stats scoped to the current user."""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        db = await get_db()
+        stats = await db.fetchone(
+            """SELECT 
+               COUNT(*) as total,
+               SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+               SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running,
+               SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) as queued,
+               AVG(CASE WHEN execution_time_ms > 0 THEN execution_time_ms END) as avg_time_ms
+               FROM generations WHERE user_id = ?""",
+            (user["id"],)
+        )
+        return web.json_response(stats or {})
+
+    # ── Wildcard routes AFTER all static sub-routes ──
+
+    @routes.get("/multiuser/generations/{gen_id}")
+    async def get_generation(request: web.Request):
+        """Get a specific generation with full details including workflow JSON."""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        raw_id = request.match_info["gen_id"]
+        try:
+            gen_id = int(raw_id)
+        except ValueError:
+            return web.json_response({"error": f"Invalid generation id: {raw_id}"}, status=400)
+
+        db = await get_db()
+
+        gen = await db.fetchone(
+            """SELECT g.*, u.username
+               FROM generations g
+               LEFT JOIN users u ON g.user_id = u.id
+               WHERE g.id = ?""",
+            (gen_id,)
+        )
+        if not gen:
+            return web.json_response({"error": "Generation not found"}, status=404)
+
+        # Non-admins can only view their own
+        if gen["user_id"] != user["id"] and not user.get("is_admin"):
+            return web.json_response({"error": "Not authorized"}, status=403)
+
+        if gen.get("output_paths"):
+            try:
+                gen["output_paths"] = json.loads(gen["output_paths"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if gen.get("workflow_json"):
+            try:
+                gen["workflow_json"] = json.loads(gen["workflow_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return web.json_response(gen)
+
     @routes.delete("/multiuser/generations/{gen_id}")
     async def delete_generation(request: web.Request):
         """Delete a generation record."""
@@ -164,7 +194,12 @@ def setup_generation_routes(routes):
         if not user:
             return web.json_response({"error": "Not authenticated"}, status=401)
 
-        gen_id = int(request.match_info["gen_id"])
+        raw_id = request.match_info["gen_id"]
+        try:
+            gen_id = int(raw_id)
+        except ValueError:
+            return web.json_response({"error": f"Invalid generation id: {raw_id}"}, status=400)
+
         db = await get_db()
 
         gen = await db.fetchone(

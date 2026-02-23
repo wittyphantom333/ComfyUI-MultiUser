@@ -82,51 +82,7 @@ def setup_ext_token_routes(routes):
 
         return web.json_response({"tokens": tokens})
 
-    @routes.get("/multiuser/ext-tokens/{token_id}")
-    async def get_ext_token_value(request: web.Request):
-        """Get the decrypted value of an external token.
-        
-        Only users in the token's group can access it.
-        This is used internally when extensions need the token.
-        """
-        user = request.get("multiuser_user")
-        if not user:
-            return web.json_response({"error": "Not authenticated"}, status=401)
-
-        token_id = int(request.match_info["token_id"])
-        db = await get_db()
-
-        token = await db.fetchone(
-            """SELECT et.*, g.name as group_name 
-               FROM ext_tokens et
-               JOIN groups g ON et.group_id = g.id
-               WHERE et.id = ?""",
-            (token_id,)
-        )
-        if not token:
-            return web.json_response({"error": "Token not found"}, status=404)
-
-        # Check access: admin or member of the group
-        if not user.get("is_admin"):
-            membership = await db.fetchone(
-                "SELECT id FROM group_members WHERE user_id = ? AND group_id = ?",
-                (user["id"], token["group_id"])
-            )
-            if not membership:
-                return web.json_response({"error": "Not authorized"}, status=403)
-
-        try:
-            decrypted = _decrypt_token(token["token_encrypted"])
-        except Exception:
-            return web.json_response(
-                {"error": "Failed to decrypt token"}, status=500
-            )
-
-        return web.json_response({
-            "service_name": token["service_name"],
-            "token": decrypted,
-            "group_name": token["group_name"],
-        })
+    # ── Static sub-routes MUST be registered before the {token_id} wildcard ──
 
     @routes.get("/multiuser/ext-tokens/service/{service_name}")
     async def get_ext_token_by_service(request: web.Request):
@@ -164,6 +120,59 @@ def setup_ext_token_routes(routes):
 
         if not token:
             return web.json_response({"error": "Token not found"}, status=404)
+
+        try:
+            decrypted = _decrypt_token(token["token_encrypted"])
+        except Exception:
+            return web.json_response(
+                {"error": "Failed to decrypt token"}, status=500
+            )
+
+        return web.json_response({
+            "service_name": token["service_name"],
+            "token": decrypted,
+            "group_name": token["group_name"],
+        })
+
+    # ── Wildcard routes AFTER all static sub-routes ──
+
+    @routes.get("/multiuser/ext-tokens/{token_id}")
+    async def get_ext_token_value(request: web.Request):
+        """Get the decrypted value of an external token.
+        
+        Only users in the token's group can access it.
+        This is used internally when extensions need the token.
+        """
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        raw_id = request.match_info["token_id"]
+        try:
+            token_id = int(raw_id)
+        except ValueError:
+            return web.json_response({"error": f"Invalid token id: {raw_id}"}, status=400)
+
+        db = await get_db()
+
+        token = await db.fetchone(
+            """SELECT et.*, g.name as group_name 
+               FROM ext_tokens et
+               JOIN groups g ON et.group_id = g.id
+               WHERE et.id = ?""",
+            (token_id,)
+        )
+        if not token:
+            return web.json_response({"error": "Token not found"}, status=404)
+
+        # Check access: admin or member of the group
+        if not user.get("is_admin"):
+            membership = await db.fetchone(
+                "SELECT id FROM group_members WHERE user_id = ? AND group_id = ?",
+                (user["id"], token["group_id"])
+            )
+            if not membership:
+                return web.json_response({"error": "Not authorized"}, status=403)
 
         try:
             decrypted = _decrypt_token(token["token_encrypted"])
@@ -246,7 +255,11 @@ def setup_ext_token_routes(routes):
     async def delete_ext_token(request: web.Request):
         """Delete an external token (admin only)."""
         _require_admin(request.get("multiuser_user"))
-        token_id = int(request.match_info["token_id"])
+        raw_id = request.match_info["token_id"]
+        try:
+            token_id = int(raw_id)
+        except ValueError:
+            return web.json_response({"error": f"Invalid token id: {raw_id}"}, status=400)
 
         db = await get_db()
         await db.execute("DELETE FROM ext_tokens WHERE id = ?", (token_id,))
