@@ -5,6 +5,7 @@ Intercepts ComfyUI endpoints to:
   2. Filter /history to show only the authenticated user's executions.
   3. Filter /view (output image serving) to the user's own folder.
 """
+import asyncio
 import json as json_mod
 import logging
 from aiohttp import web
@@ -40,11 +41,19 @@ def install_isolation_middleware(app: web.Application) -> None:
         # ── 1. Per-user output directory (rewrite SaveImage in /prompt) ──
         if (
             request.method == "POST"
-            and request.path == "/prompt"
+            and request.path in ("/prompt", "/prompt/")
             and user
             and _is_enabled("per_user_outputs")
         ):
             return await _rewrite_prompt_outputs(request, handler, user)
+        
+        # Debug: log if we see a prompt POST that wasn't caught
+        if request.method == "POST" and "prompt" in request.path.lower():
+            logger.info(
+                "Isolation: saw POST %s — user=%s, per_user_outputs=%s",
+                request.path, user.get("username") if user else None,
+                _is_enabled("per_user_outputs"),
+            )
 
         # ── 2. Restrict /history to user's own prompts ──
         if (
@@ -125,11 +134,33 @@ async def _rewrite_prompt_outputs(
                 )
 
     if modified:
-        # Patch the cached body so downstream (ComfyUI's /prompt handler and
-        # our prompt-tracking middleware) sees the rewritten prompt.
-        # aiohttp caches request.read() in request._read_bytes.
         new_body = json_mod.dumps(data).encode()
+
+        # Patch the cached body so downstream middleware and ComfyUI's handler
+        # all see the rewritten prompt regardless of which aiohttp read path
+        # they use (request.read(), request.json(), request.content.read()).
         request._read_bytes = new_body
+
+        # Also replace the raw payload stream so request.content.read() works
+        # in all aiohttp versions (3.x+).
+        try:
+            from aiohttp.streams import EMPTY_PAYLOAD, StreamReader
+            try:
+                payload = StreamReader(request.protocol, 2**16,
+                                       loop=asyncio.get_event_loop())
+            except TypeError:
+                # aiohttp >= 3.9 dropped the loop parameter
+                payload = StreamReader(request.protocol, 2**16)
+            payload.feed_data(new_body)
+            payload.feed_eof()
+            request._payload = payload
+        except Exception:
+            pass  # _read_bytes patch is sufficient in most cases
+
+        logger.info(
+            "Isolation: rewrote prompt for user %s (%d bytes -> %d bytes)",
+            username, len(body), len(new_body),
+        )
 
     return await handler(request)
 

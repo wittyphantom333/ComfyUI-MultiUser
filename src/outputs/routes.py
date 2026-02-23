@@ -308,18 +308,30 @@ def setup_output_routes(routes):
         # EVERY user (admin or not) only sees their own subfolder here.
         # Admins use the separate /outputs/all endpoint for cross-user browsing.
         files: list[dict] = []
-        logger.debug(
+        logger.info(
             "list_outputs: user=%s is_admin=%s output_dir=%s",
             username, is_admin, output_dir,
         )
 
         user_dir = output_dir / username
+        logger.info(
+            "list_outputs: scanning user_dir=%s exists=%s is_dir=%s",
+            user_dir, user_dir.exists(), user_dir.is_dir() if user_dir.exists() else False,
+        )
         if user_dir.is_dir():
             for entry in user_dir.rglob("*"):
                 if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
                     files.append(_file_info(entry, output_dir))
 
-        logger.debug(
+        # Also list root-level dirs so we can see what's in the output folder
+        if output_dir.exists():
+            root_items = [e.name for e in output_dir.iterdir()]
+            logger.info(
+                "list_outputs: output_dir root contents: %s",
+                root_items[:20],
+            )
+
+        logger.info(
             "list_outputs: user=%s found %d files before filters",
             username, len(files),
         )
