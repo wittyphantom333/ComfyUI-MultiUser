@@ -20,7 +20,7 @@ from .src.tokens.routes import setup_ext_token_routes
 from .src.generations.routes import setup_generation_routes
 from .src.workflows.routes import setup_workflow_routes
 from .src.outputs.routes import setup_output_routes
-from .src.isolation.middleware import install_isolation_middleware, current_prompt_user
+from .src.isolation.middleware import install_isolation_middleware
 from .src.generations.tracker import (
     on_prompt_queued,
     on_prompt_started,
@@ -94,60 +94,56 @@ install_middleware(prompt_server.app)
 install_isolation_middleware(prompt_server.app)
 
 # ---------------------------------------------------------------------------
-# Prompt-queue monkey-patch: per-user output directories (PRIMARY mechanism)
+# on_prompt_handler: per-user output directories (PRIMARY mechanism)
 # ---------------------------------------------------------------------------
 
-def _patch_prompt_queue():
-    """Rewrite filename_prefix in prompts as they enter the execution queue.
+def _install_prompt_rewrite_handler():
+    """Register a ComfyUI on_prompt_handler to rewrite filename_prefix.
 
-    This operates at the pure-Python-dict level — no request-body hacking —
-    so it works regardless of aiohttp version or body-caching quirks.
-    The isolation middleware sets *current_prompt_user* (a ContextVar) for
-    each /prompt POST; we read it here and prefix every filename_prefix.
+    This is the idiomatic ComfyUI approach: PromptServer.trigger_on_prompt()
+    calls our handler with the already-parsed json_data *before* validation
+    and queueing.  The isolation middleware tags prompt_server._mu_prompt_user
+    with the authenticated username; we read it here and prefix every
+    filename_prefix in the prompt dict.
+
+    No aiohttp body-patching, no ContextVars, no queue monkey-patching.
     """
-    try:
-        queue = prompt_server.prompt_queue
-        original_put = queue.put
-    except AttributeError:
-        logger.warning("MultiUser: prompt_queue not found — queue patch skipped")
-        return
 
-    def patched_put(item):
-        username = current_prompt_user.get(None)
-        if username and isinstance(item, (tuple, list)):
-            # item is typically (number, prompt_id, prompt, extra_data, outputs_to_execute)
-            # Find the prompt dict (a dict-of-dicts with 'class_type' keys)
-            for part in item:
-                if not isinstance(part, dict):
-                    continue
-                # Quick smoke-test: does any value look like a node?
-                is_prompt = any(
-                    isinstance(v, dict) and "class_type" in v
-                    for v in part.values()
-                )
-                if not is_prompt:
-                    continue
-                for _nid, node in part.items():
-                    if not isinstance(node, dict):
-                        continue
-                    inputs = node.get("inputs")
-                    if not isinstance(inputs, dict):
-                        continue
-                    if "filename_prefix" in inputs:
-                        pfx = inputs.get("filename_prefix", "ComfyUI")
-                        if isinstance(pfx, str) and not pfx.startswith(f"{username}/"):
-                            inputs["filename_prefix"] = f"{username}/{pfx}"
-                            print(
-                                f"[ISOLATION QUEUE] {_nid} filename_prefix → "
-                                f"'{inputs['filename_prefix']}' (user={username})"
-                            )
-                break  # only patch the first prompt-dict found
-        return original_put(item)
+    def rewrite_handler(json_data):
+        username = getattr(prompt_server, "_mu_prompt_user", None)
+        print(f"[ISOLATION on_prompt] handler called — _mu_prompt_user={username}")
 
-    queue.put = patched_put
-    logger.info("MultiUser: prompt queue patched for per-user isolation")
+        if not username:
+            return json_data
 
-_patch_prompt_queue()
+        prompt = json_data.get("prompt")
+        if not prompt or not isinstance(prompt, dict):
+            return json_data
+
+        for _nid, node in prompt.items():
+            if not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if "filename_prefix" in inputs:
+                pfx = inputs.get("filename_prefix", "ComfyUI")
+                if isinstance(pfx, str) and not pfx.startswith(f"{username}/"):
+                    inputs["filename_prefix"] = f"{username}/{pfx}"
+                    print(
+                        f"[ISOLATION on_prompt] node {_nid} filename_prefix → "
+                        f"'{inputs['filename_prefix']}' (user={username})"
+                    )
+
+        # Clear the tag so it doesn't leak to subsequent requests
+        prompt_server._mu_prompt_user = None
+        return json_data
+
+    prompt_server.add_on_prompt_handler(rewrite_handler)
+    print("[ISOLATION] on_prompt_handler registered")
+    logger.info("MultiUser: on_prompt_handler registered for per-user isolation")
+
+_install_prompt_rewrite_handler()
 
 # ---------------------------------------------------------------------------
 # Database initialisation (runs in background at startup)

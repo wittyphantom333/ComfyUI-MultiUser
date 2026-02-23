@@ -5,23 +5,15 @@ Intercepts ComfyUI endpoints to:
   2. Filter /history to show only the authenticated user's executions.
   3. Filter /view (output image serving) to the user's own folder.
 """
-import asyncio
-import contextvars
 import json as json_mod
 import logging
 from aiohttp import web
 
+import server as comfyui_server  # ComfyUI's PromptServer module
+
 from ..config import get_config
 
 logger = logging.getLogger("comfyui-multiuser.isolation")
-
-# ContextVar that carries the authenticated username for the current request.
-# The prompt-queue monkey-patch in __init__.py reads this to rewrite
-# filename_prefix at the Python-dict level — completely independent of
-# any aiohttp request-body patching.
-current_prompt_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "isolation_prompt_user", default=None
-)
 
 
 def _is_enabled(key: str) -> bool:
@@ -47,22 +39,21 @@ def install_isolation_middleware(app: web.Application) -> None:
                 status=403,
             )
 
-        # ── 1. Per-user output directory (rewrite SaveImage in /prompt) ──
+        # ── 1. Per-user output directory ──
+        # Tag the prompt_server with the current username so the
+        # on_prompt_handler (registered in __init__.py) can rewrite
+        # filename_prefix before ComfyUI queues the prompt.
         if (
             request.method == "POST"
             and request.path in ("/prompt", "/prompt/")
             and user
             and _is_enabled("per_user_outputs")
         ):
-            return await _rewrite_prompt_outputs(request, handler, user)
-        
-        # Debug: log if we see a prompt POST that wasn't caught
-        if request.method == "POST" and "prompt" in request.path.lower():
-            logger.info(
-                "Isolation: saw POST %s — user=%s, per_user_outputs=%s",
-                request.path, user.get("username") if user else None,
-                _is_enabled("per_user_outputs"),
-            )
+            username = user["username"]
+            ps = comfyui_server.PromptServer.instance
+            ps._mu_prompt_user = username
+            print(f"[ISOLATION MW] POST /prompt — tagged user={username}")
+            logger.info("Isolation: tagged prompt user=%s on PromptServer", username)
 
         # ── 2. Restrict /history to user's own prompts ──
         if (
@@ -98,54 +89,6 @@ def install_isolation_middleware(app: web.Application) -> None:
     app.middlewares.insert(1, isolation_middleware)
     logger.info("User workspace isolation middleware installed")
 
-
-# ---------------------------------------------------------------------------
-#  /prompt — rewrite SaveImage / PreviewImage output_prefix
-# ---------------------------------------------------------------------------
-
-async def _rewrite_prompt_outputs(
-    request: web.Request, handler, user: dict
-) -> web.Response:
-    """Tag the current async context with the username.
-
-    The actual filename_prefix rewriting happens in the PromptQueue
-    monkey-patch (see __init__.py) which reads *current_prompt_user*.
-    We also attempt a best-effort request-body rewrite so that the
-    prompt-tracking middleware records the rewritten prefix, but the
-    queue-level patch is the **primary** mechanism that guarantees
-    files land in per-user subdirectories.
-    """
-    username = user["username"]
-
-    # ── PRIMARY: set ContextVar so the queue patch can pick it up ──
-    current_prompt_user.set(username)
-    print(f"[ISOLATION] Set prompt user context → {username}")
-    logger.info("Isolation: set current_prompt_user=%s", username)
-
-    # ── SECONDARY: best-effort body rewrite (helps prompt-tracking) ──
-    try:
-        body = await request.read()
-        data = json_mod.loads(body)
-        prompt = data.get("prompt", {})
-        modified = False
-        if isinstance(prompt, dict):
-            for _nid, node in prompt.items():
-                if not isinstance(node, dict):
-                    continue
-                inputs = node.get("inputs")
-                if isinstance(inputs, dict) and "filename_prefix" in inputs:
-                    pfx = inputs.get("filename_prefix", "ComfyUI")
-                    if isinstance(pfx, str) and not pfx.startswith(f"{username}/"):
-                        inputs["filename_prefix"] = f"{username}/{pfx}"
-                        modified = True
-        if modified:
-            new_body = json_mod.dumps(data).encode()
-            request._read_bytes = new_body
-            logger.info("Isolation: body-patched prompt for user %s", username)
-    except Exception as exc:
-        logger.debug("Isolation: body rewrite skipped: %s", exc)
-
-    return await handler(request)
 
 
 # ---------------------------------------------------------------------------
