@@ -37,12 +37,19 @@ def install_isolation_middleware(app: web.Application) -> None:
 
         # ── 2. Restrict /history to user's own prompts ──
         if (
-            request.path in ("/history", "/history/")
-            and request.method == "GET"
+            request.method == "GET"
+            and (request.path in ("/history", "/history/")
+                 or request.path.startswith("/history/"))
             and user
             and not user.get("is_admin")
             and _is_enabled("restrict_history_access")
         ):
+            # Single-prompt variant: /history/{prompt_id}
+            parts = request.path.rstrip("/").split("/")
+            if len(parts) == 3 and parts[2]:
+                return await _filter_history_single(
+                    request, handler, user, parts[2]
+                )
             return await _filter_history(request, handler, user)
 
         # ── 3. Restrict /view to user's own output subfolder ──
@@ -118,7 +125,12 @@ async def _rewrite_prompt_outputs(
 async def _filter_history(
     request: web.Request, handler, user: dict
 ) -> web.Response:
-    """Let the request through, then strip entries the user doesn't own."""
+    """Let the request through, then strip entries belonging to *other* users.
+
+    Strategy: block prompts that the generations table attributes to someone
+    else.  Prompts not tracked at all (legacy / pre-plugin) are left visible
+    so existing history isn't wiped out.
+    """
     response = await handler(request)
 
     if response.status != 200:
@@ -139,18 +151,39 @@ async def _filter_history(
     from ..db.factory import get_db
     db = await get_db()
 
-    # Our generations table maps prompt_id -> user_id
     user_id = user["id"]
-    owned_prompts = await db.fetchall(
-        "SELECT prompt_id FROM generations WHERE user_id = ?",
+
+    # Fetch all tracked prompt_ids that belong to OTHER users.
+    other_prompts = await db.fetchall(
+        "SELECT prompt_id FROM generations WHERE user_id != ?",
         (user_id,)
     )
-    owned_set = {r["prompt_id"] for r in owned_prompts}
+    other_set = {r["prompt_id"] for r in other_prompts}
 
-    # Keep only entries whose key is in the user's owned set
-    filtered = {k: v for k, v in history.items() if k in owned_set}
+    # Remove entries known to belong to someone else.
+    # Untracked prompts (not in generations at all) stay visible.
+    filtered = {k: v for k, v in history.items() if k not in other_set}
 
     return web.json_response(filtered)
+
+
+async def _filter_history_single(
+    request: web.Request, handler, user: dict, prompt_id: str
+) -> web.Response:
+    """Gate /history/{prompt_id} — deny if it's known to belong to another user."""
+    from ..db.factory import get_db
+    db = await get_db()
+
+    owner = await db.fetchone(
+        "SELECT user_id FROM generations WHERE prompt_id = ?",
+        (prompt_id,)
+    )
+    # If tracked and belongs to someone else → deny
+    if owner and owner["user_id"] != user["id"]:
+        return web.json_response({}, status=200)
+
+    # Not tracked (legacy) or belongs to this user → allow
+    return await handler(request)
 
 
 # ---------------------------------------------------------------------------
@@ -160,24 +193,45 @@ async def _filter_history(
 async def _filter_view(
     request: web.Request, handler, user: dict
 ) -> web.Response:
-    """Block serving images that are outside the user's output subfolder."""
+    """Block output images that live inside *another* user's subfolder.
+
+    Files at the root of the output directory (no user-prefix) are treated as
+    shared / legacy and are allowed through.  Only files explicitly inside a
+    different user's subfolder are denied.
+    """
     filename = request.query.get("filename", "")
     subfolder = request.query.get("subfolder", "")
 
     username = user["username"]
 
-    # For "output" type, the file must live under <username>/
+    # Only gate "output" type — temp previews and inputs are unrestricted.
     img_type = request.query.get("type", "output")
     if img_type == "output":
-        # The subfolder should start with the user's directory
-        # Files saved with prefix "username/ComfyUI" end up as
-        #   subfolder="" filename="username/ComfyUI_00001_.png"  or
-        #   subfolder="username" filename="ComfyUI_00001_.png"
+        # Build the effective path the same way ComfyUI does:
+        #   subfolder="username"  filename="ComfyUI_00001_.png"
+        #     → full_path = "username/ComfyUI_00001_.png"
+        #   subfolder=""  filename="ComfyUI_00001_.png"
+        #     → full_path = "ComfyUI_00001_.png"  (shared / legacy)
         full_path = f"{subfolder}/{filename}" if subfolder else filename
-        if not full_path.startswith(f"{username}/") and not full_path.startswith(f"{username}\\"):
-            return web.json_response(
-                {"error": "Access denied — you can only view your own outputs"},
-                status=403,
+
+        # Determine the top-level directory component (if any).
+        top_dir = full_path.split("/")[0] if "/" in full_path else None
+
+        if top_dir and top_dir != username:
+            # The file sits inside a named subfolder that isn't ours.
+            # Check whether that subfolder belongs to another user.
+            from ..db.factory import get_db
+            db = await get_db()
+            owner = await db.fetchone(
+                "SELECT id FROM users WHERE username = ?", (top_dir,)
             )
+            if owner:
+                # It's another user's folder — deny.
+                return web.json_response(
+                    {"error": "Access denied — you can only view your own outputs"},
+                    status=403,
+                )
+            # top_dir isn't a known username → treat as a shared/custom
+            # subfolder and allow.
 
     return await handler(request)
