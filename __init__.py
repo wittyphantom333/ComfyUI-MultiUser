@@ -28,6 +28,32 @@ from .src.generations.tracker import (
 
 logger = logging.getLogger("comfyui-multiuser")
 
+# Reference to the main event loop, captured at module load or first middleware call.
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _fire_and_forget(coro):
+    """Schedule an async coroutine on the main event loop from any thread.
+
+    Uses run_coroutine_threadsafe so it works from ComfyUI's execution thread
+    (which is NOT the asyncio event loop thread).  Swallows exceptions to avoid
+    crashing the generation pipeline.
+    """
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        # Fallback: try the running loop (works if called from the loop thread)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("MultiUser: no event loop available, skipping tracker call")
+            return
+
+    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+    # Add a callback to log (but not raise) any errors
+    fut.add_done_callback(
+        lambda f: f.exception() and logger.debug("MultiUser tracker: %s", f.exception())
+    )
+
 # ---------------------------------------------------------------------------
 # ComfyUI Custom Node exports
 # ---------------------------------------------------------------------------
@@ -97,7 +123,7 @@ def _hook_execution_events():
             if event == "execution_start":
                 prompt_id = data.get("prompt_id")
                 if prompt_id:
-                    asyncio.ensure_future(on_prompt_started(prompt_id))
+                    _fire_and_forget(on_prompt_started(prompt_id))
 
             elif event == "execution_success":
                 prompt_id = data.get("prompt_id")
@@ -113,18 +139,18 @@ def _hook_execution_events():
                                 if isinstance(img, dict) and "filename" in img:
                                     paths.append(img["filename"])
                         output_paths = paths or None
-                    asyncio.ensure_future(on_prompt_completed(prompt_id, output_paths))
+                    _fire_and_forget(on_prompt_completed(prompt_id, output_paths))
 
             elif event == "execution_error":
                 prompt_id = data.get("prompt_id")
                 error_msg = data.get("exception_message", "")
                 if prompt_id:
-                    asyncio.ensure_future(on_prompt_error(prompt_id, str(error_msg)))
+                    _fire_and_forget(on_prompt_error(prompt_id, str(error_msg)))
 
             elif event == "execution_interrupted":
                 prompt_id = data.get("prompt_id")
                 if prompt_id:
-                    asyncio.ensure_future(on_prompt_error(prompt_id, "Interrupted"))
+                    _fire_and_forget(on_prompt_error(prompt_id, "Interrupted"))
 
         except Exception:
             logger.exception("MultiUser: error in execution hook")
@@ -146,6 +172,11 @@ def _hook_prompt_via_middleware():
 
     @web.middleware
     async def prompt_tracking_middleware(request: web.Request, handler):
+        # Capture the main event loop on first request (runs in the aiohttp loop thread)
+        global _main_loop
+        if _main_loop is None or _main_loop.is_closed():
+            _main_loop = asyncio.get_running_loop()
+
         # Only intercept POST /prompt
         if request.method == "POST" and request.path == "/prompt":
             user = request.get("multiuser_user")
