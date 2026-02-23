@@ -315,6 +315,7 @@ export function renderOutputGallery(el) {
    Helpers
    ──────────────────────────────────────────────────────────────────── */
 function _mk(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
+function _titleCase(s) { return s.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()); }
 
 function _sel(opts, val, fn) {
   const s = document.createElement("select");
@@ -545,7 +546,7 @@ function _ctxSep(menu) { menu.appendChild(_mk("div","mu-ctx-sep")); }
 function _promptTag(f) {
   const tag = prompt("Enter tag name:");
   if (!tag?.trim()) return;
-  apiPost("/outputs/tags", {file_path: f.relative_path, tags: [tag.trim().toLowerCase()]})
+  apiPost("/outputs/tags", {file_path: f.relative_path, tags: [_titleCase(tag.trim())]})
     .then(r => { if (r.ok) { _loadTags(); _load(); _toast("Tag added"); } })
     .catch(() => {});
 }
@@ -695,7 +696,7 @@ function _renderLBTags(el, f) {
   const inp = _mk("input","mu-lb-tag-input"); inp.type = "text"; inp.placeholder = "Add tag…";
   inp.onkeydown = async (e) => {
     if (e.key !== "Enter") return;
-    const v = inp.value.trim().toLowerCase(); if (!v) return;
+    const v = _titleCase(inp.value.trim()); if (!v) return;
     try {
       const r = await apiPost("/outputs/tags",{file_path:f.relative_path,tags:[v]});
       if (r.ok) { if (!f.tags) f.tags = []; if (!f.tags.includes(v)) f.tags.push(v); inp.value = ""; _renderLBTags(el,f); _loadTags(); }

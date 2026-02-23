@@ -14,17 +14,17 @@ const TOKEN_KEY = "multiuser_token";
 const SIDEBAR_CSS = `
   .mu-sidebar {
     padding: 12px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #e0e0e0;
+    font-family: Arial, sans-serif;
+    color: var(--descrip-text, #bbb);
     font-size: 13px;
   }
   .mu-sidebar h3 {
     margin: 0 0 4px 0;
     font-size: 15px;
-    color: #fff;
+    color: var(--input-text, #ddd);
   }
   .mu-sidebar .mu-section {
-    background: #222238;
+    background: var(--comfy-menu-bg, #353535);
     border-radius: 8px;
     padding: 14px;
     margin-bottom: 12px;
@@ -34,7 +34,7 @@ const SIDEBAR_CSS = `
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #888;
+    color: var(--descrip-text, #999);
     margin: 0 0 10px 0;
   }
   .mu-sidebar .mu-user-header {
@@ -47,13 +47,13 @@ const SIDEBAR_CSS = `
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: #7c6cff;
+    background: var(--comfy-input-bg, #535353);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 18px;
     font-weight: 700;
-    color: white;
+    color: var(--input-text, #ddd);
     flex-shrink: 0;
   }
   .mu-sidebar .mu-user-info {
@@ -63,7 +63,7 @@ const SIDEBAR_CSS = `
   .mu-sidebar .mu-username {
     font-size: 16px;
     font-weight: 600;
-    color: #fff;
+    color: var(--input-text, #ddd);
     margin: 0;
     word-break: break-all;
   }
@@ -77,18 +77,18 @@ const SIDEBAR_CSS = `
     vertical-align: middle;
   }
   .mu-sidebar .mu-badge-admin {
-    background: #7c6cff;
-    color: white;
+    background: var(--comfy-input-bg, #535353);
+    color: var(--input-text, #ddd);
   }
   .mu-sidebar .mu-groups {
     font-size: 12px;
-    color: #888;
+    color: var(--descrip-text, #999);
     margin: 2px 0 0 0;
   }
   .mu-sidebar .mu-group-tag {
     display: inline-block;
-    background: #1f2a3d;
-    color: #6bb5ff;
+    background: #293742;
+    color: #5ba3d9;
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 11px;
@@ -107,16 +107,16 @@ const SIDEBAR_CSS = `
     padding: 8px 10px;
     border-radius: 6px;
     cursor: pointer;
-    color: #ccc;
+    color: var(--descrip-text, #bbb);
     transition: background 0.15s;
     font-size: 13px;
   }
   .mu-sidebar .mu-action-item:hover {
-    background: #2a2a3e;
-    color: #fff;
+    background: var(--comfy-input-bg, #444);
+    color: var(--input-text, #ddd);
   }
   .mu-sidebar .mu-action-item.danger {
-    color: #ff6b6b;
+    color: #ef5350;
   }
   .mu-sidebar .mu-action-item.danger:hover {
     background: #3d1f1f;
@@ -129,7 +129,7 @@ const SIDEBAR_CSS = `
   }
   .mu-sidebar .mu-divider {
     height: 1px;
-    background: #333;
+    background: var(--border-color, #4e4e4e);
     margin: 8px 0;
   }
   .mu-sidebar .mu-token-list {
@@ -140,19 +140,19 @@ const SIDEBAR_CSS = `
     align-items: center;
     justify-content: space-between;
     padding: 6px 8px;
-    background: #1a1a2e;
+    background: var(--comfy-input-bg, #222);
     border-radius: 4px;
     margin-bottom: 4px;
     font-size: 12px;
   }
   .mu-sidebar .mu-token-prefix {
     font-family: monospace;
-    color: #aaa;
+    color: var(--descrip-text, #aaa);
   }
   .mu-sidebar .mu-token-del {
     background: none;
     border: none;
-    color: #ff6b6b;
+    color: #ef5350;
     cursor: pointer;
     font-size: 14px;
     padding: 2px 6px;
@@ -171,11 +171,11 @@ const SIDEBAR_CSS = `
     transition: background 0.2s;
   }
   .mu-sidebar .mu-btn-primary {
-    background: #7c6cff;
-    color: white;
+    background: var(--comfy-input-bg, #535353);
+    color: var(--input-text, #ddd);
   }
   .mu-sidebar .mu-btn-primary:hover {
-    background: #6a5aee;
+    background: #555;
   }
   .mu-sidebar .mu-btn-sm {
     padding: 4px 10px;
@@ -183,11 +183,11 @@ const SIDEBAR_CSS = `
   }
   .mu-sidebar .mu-btn-outline {
     background: transparent;
-    border: 1px solid #555;
-    color: #ccc;
+    border: 1px solid var(--border-color, #4e4e4e);
+    color: var(--descrip-text, #bbb);
   }
   .mu-sidebar .mu-btn-outline:hover {
-    background: #2a2a3e;
+    background: var(--comfy-input-bg, #444);
   }
   .mu-sidebar .mu-stat-row {
     display: flex;
@@ -196,10 +196,10 @@ const SIDEBAR_CSS = `
     font-size: 12px;
   }
   .mu-sidebar .mu-stat-label {
-    color: #888;
+    color: var(--descrip-text, #999);
   }
   .mu-sidebar .mu-stat-value {
-    color: #e0e0e0;
+    color: var(--input-text, #ddd);
     font-weight: 600;
   }
 `;

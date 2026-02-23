@@ -300,7 +300,7 @@ def setup_output_routes(routes):
         search = request.query.get("search", "").strip().lower()
         type_filter = request.query.get("type", "all")
         user_filter = request.query.get("user", "").strip()
-        tag_filter = request.query.get("tag", "").strip().lower()
+        tag_filter = request.query.get("tag", "").strip().title()
         min_rating = int(request.query.get("min_rating", 0))
 
         db = await get_db()
@@ -330,13 +330,6 @@ def setup_output_routes(routes):
                 for entry in user_dir.rglob("*"):
                     if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
                         files.append(_file_info(entry, output_dir))
-
-            # Root-level (non-recursive) shared/legacy files only.
-            # Cross-check with generations table: if a root-level file can be
-            # attributed to a different user's generation, skip it.
-            for entry in output_dir.iterdir():
-                if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                    files.append(_file_info(entry, output_dir))
 
         logger.debug(
             "list_outputs: user=%s found %d files before filters",
@@ -586,7 +579,7 @@ def setup_output_routes(routes):
         if not _check_access(user, full_path, output_dir, user_dirs):
             return web.json_response({"error": "Access denied"}, status=403)
 
-        clean_tags = list({t.strip().lower() for t in tags if t.strip()})
+        clean_tags = list({t.strip().title() for t in tags if t.strip()})
         for tag in clean_tags:
             await db.execute(
                 "INSERT OR IGNORE INTO output_tags (user_id, file_path, tag) VALUES (?, ?, ?)",
@@ -605,7 +598,7 @@ def setup_output_routes(routes):
             return web.json_response({"error": "Not authenticated"}, status=401)
 
         file_path_str = request.query.get("file_path", "").strip()
-        tag = request.query.get("tag", "").strip().lower()
+        tag = request.query.get("tag", "").strip().title()
         if not file_path_str or not tag:
             return web.json_response({"error": "file_path and tag required"}, status=400)
 

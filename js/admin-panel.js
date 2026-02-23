@@ -11,8 +11,8 @@ import { apiGet, apiPost, apiPut, apiDelete } from "./api.js";
 const ADMIN_CSS = `
   .mu-admin {
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #e0e0e0;
+    font-family: Arial, sans-serif;
+    color: var(--descrip-text, #bbb);
     font-size: 13px;
     height: 100%;
     display: flex;
@@ -20,15 +20,15 @@ const ADMIN_CSS = `
   }
   .mu-admin-tabs {
     display: flex;
-    border-bottom: 1px solid #333;
-    background: #1e1e30;
+    border-bottom: 1px solid var(--border-color, #4e4e4e);
+    background: var(--comfy-menu-bg, #353535);
     flex-shrink: 0;
     overflow-x: auto;
   }
   .mu-admin-tab {
     padding: 8px 12px;
     cursor: pointer;
-    color: #888;
+    color: var(--descrip-text, #999);
     font-size: 11px;
     font-weight: 600;
     border-bottom: 2px solid transparent;
@@ -36,8 +36,8 @@ const ADMIN_CSS = `
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .mu-admin-tab:hover { color: #ccc; }
-  .mu-admin-tab.active { color: #7c6cff; border-bottom-color: #7c6cff; }
+  .mu-admin-tab:hover { color: var(--input-text, #ddd); }
+  .mu-admin-tab.active { color: var(--input-text, #ddd); border-bottom-color: var(--input-text, #ddd); }
   .mu-admin-content {
     padding: 12px;
     flex: 1;
@@ -51,8 +51,8 @@ const ADMIN_CSS = `
   .mu-admin-table th {
     text-align: left;
     padding: 6px 8px;
-    background: #222;
-    color: #aaa;
+    background: var(--comfy-input-bg, #222);
+    color: var(--descrip-text, #999);
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
@@ -60,10 +60,10 @@ const ADMIN_CSS = `
   }
   .mu-admin-table td {
     padding: 6px 8px;
-    border-bottom: 1px solid #2a2a3e;
+    border-bottom: 1px solid var(--border-color, #4e4e4e);
     font-size: 12px;
   }
-  .mu-admin-table tr:hover td { background: #222238; }
+  .mu-admin-table tr:hover td { background: var(--comfy-menu-bg, #353535); }
   .mu-admin .mu-btn {
     padding: 5px 12px;
     border: none;
@@ -73,19 +73,19 @@ const ADMIN_CSS = `
     cursor: pointer;
     transition: background 0.2s;
   }
-  .mu-admin .mu-btn-primary { background: #7c6cff; color: white; }
-  .mu-admin .mu-btn-primary:hover { background: #6a5aee; }
-  .mu-admin .mu-btn-danger { background: #ff4444; color: white; }
-  .mu-admin .mu-btn-danger:hover { background: #cc3333; }
+  .mu-admin .mu-btn-primary { background: var(--comfy-input-bg, #535353); color: var(--input-text, #ddd); }
+  .mu-admin .mu-btn-primary:hover { background: #555; }
+  .mu-admin .mu-btn-danger { background: #c62828; color: white; }
+  .mu-admin .mu-btn-danger:hover { background: #d32f2f; }
   .mu-admin .mu-btn-sm { padding: 3px 8px; font-size: 10px; }
-  .mu-admin .mu-btn-outline { background: transparent; border: 1px solid #555; color: #ccc; }
-  .mu-admin .mu-btn-outline:hover { background: #2a2a3e; }
+  .mu-admin .mu-btn-outline { background: transparent; border: 1px solid var(--border-color, #4e4e4e); color: var(--descrip-text, #bbb); }
+  .mu-admin .mu-btn-outline:hover { background: var(--comfy-input-bg, #444); }
   .mu-admin .mu-form-group {
     margin-bottom: 10px;
   }
   .mu-admin .mu-form-group label {
     display: block;
-    color: #aaa;
+    color: var(--descrip-text, #999);
     font-size: 11px;
     margin-bottom: 3px;
     font-weight: 600;
@@ -95,16 +95,16 @@ const ADMIN_CSS = `
   .mu-admin .mu-form-group textarea {
     width: 100%;
     padding: 6px 8px;
-    background: #2a2a3e;
-    border: 1px solid #444;
+    background: var(--comfy-input-bg, #222);
+    border: 1px solid var(--border-color, #4e4e4e);
     border-radius: 5px;
-    color: #e0e0e0;
+    color: var(--input-text, #ddd);
     font-size: 12px;
     box-sizing: border-box;
   }
   .mu-admin .mu-form-group input:focus,
   .mu-admin .mu-form-group select:focus {
-    border-color: #7c6cff;
+    border-color: #888;
     outline: none;
   }
   .mu-admin .mu-form-row {
@@ -122,12 +122,12 @@ const ADMIN_CSS = `
   }
   .mu-admin .mu-badge-green { background: #1f3d2a; color: #6bff8b; }
   .mu-admin .mu-badge-red { background: #3d1f1f; color: #ff6b6b; }
-  .mu-admin .mu-badge-blue { background: #1f2a3d; color: #6bb5ff; }
-  .mu-admin .mu-badge-purple { background: #2a1f3d; color: #b56bff; }
+  .mu-admin .mu-badge-blue { background: #293742; color: #5ba3d9; }
+  .mu-admin .mu-badge-purple { background: #293742; color: #5ba3d9; }
   .mu-admin .mu-empty-state {
     text-align: center;
     padding: 30px 12px;
-    color: #666;
+    color: var(--descrip-text, #999);
     font-size: 12px;
   }
   .mu-admin .mu-stat-cards {
@@ -137,7 +137,7 @@ const ADMIN_CSS = `
     margin-bottom: 12px;
   }
   .mu-admin .mu-stat-card {
-    background: #222238;
+    background: var(--comfy-menu-bg, #353535);
     border-radius: 6px;
     padding: 10px;
     text-align: center;
@@ -145,17 +145,17 @@ const ADMIN_CSS = `
   .mu-admin .mu-stat-card .value {
     font-size: 20px;
     font-weight: 700;
-    color: #7c6cff;
+    color: var(--input-text, #ddd);
   }
   .mu-admin .mu-stat-card .label {
     font-size: 10px;
-    color: #888;
+    color: var(--descrip-text, #999);
     margin-top: 2px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   .mu-admin .mu-inline-form {
-    background: #222238;
+    background: var(--comfy-menu-bg, #353535);
     border-radius: 6px;
     padding: 12px;
     margin-bottom: 12px;
@@ -442,7 +442,7 @@ async function _renderPermissions(content) {
             <tr>
               <td><span class="mu-badge mu-badge-blue">${p.group_name}</span></td>
               <td>${p.resource_type}</td>
-              <td><code style="background:#2a2a3e;padding:1px 4px;border-radius:3px;font-size:11px;">${p.resource_pattern}</code></td>
+              <td><code style="background:var(--comfy-input-bg,#222);padding:1px 4px;border-radius:3px;font-size:11px;">${p.resource_pattern}</code></td>
               <td>${p.action === 'allow'
                 ? '<span class="mu-badge mu-badge-green">Allow</span>'
                 : '<span class="mu-badge mu-badge-red">Deny</span>'}</td>
