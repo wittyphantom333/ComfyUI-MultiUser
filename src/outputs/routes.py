@@ -14,6 +14,7 @@ Features:
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -52,6 +53,19 @@ if not _HAS_FFMPEG:
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively replace NaN/Infinity floats with None so json.dumps succeeds."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
 
 def _get_output_dir() -> Path:
     """Resolve ComfyUI's output directory."""
@@ -107,12 +121,15 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     rel = path.relative_to(output_dir)
     stat = path.stat()
     ext = path.suffix.lower()
+    mtime = stat.st_mtime
+    if math.isnan(mtime) or math.isinf(mtime):
+        mtime = 0.0
     return {
         "filename": path.name,
         "subfolder": str(rel.parent) if str(rel.parent) != "." else "",
         "relative_path": str(rel),
         "size": stat.st_size,
-        "modified": stat.st_mtime,
+        "modified": mtime,
         "type": "video" if ext in VIDEO_EXTS else "image",
     }
 
@@ -868,10 +885,13 @@ def setup_output_routes(routes):
 
         ext = file_path.suffix.lower()
         stat = file_path.stat()
+        mtime = stat.st_mtime
+        if math.isnan(mtime) or math.isinf(mtime):
+            mtime = 0.0
         meta = {
             "filename": file_path.name,
             "size": stat.st_size,
-            "modified": stat.st_mtime,
+            "modified": mtime,
             "extension": ext,
         }
         if ext in VIDEO_EXTS:
@@ -920,7 +940,7 @@ def setup_output_routes(routes):
         else:
             meta["geninfo"] = {}
 
-        return web.json_response(meta)
+        return web.json_response(_sanitize_for_json(meta))
 
     # ------------------------------------------------------------------
     #  POST /multiuser/outputs/tags  —  add tags
