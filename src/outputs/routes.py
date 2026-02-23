@@ -136,32 +136,44 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     }
 
 
-def _has_embedded_workflow(path: Path) -> bool:
-    """Check whether a file has embedded ComfyUI workflow/prompt data from a
-    *non-obvious* source.  Standard ComfyUI PNGs always embed prompt+workflow
-    data, so marking them all as '+' adds no information.  Instead, '+' is
-    reserved for cases where metadata presence is noteworthy:
+# Sampler node class_type substrings that indicate actual generation data.
+# Matches Majoor's _graph_has_sampler logic: KSampler*, SamplerCustom*, etc.
+_SAMPLER_MARKERS = (b"KSampler", b"ksampler", b"SamplerCustom", b"samplercustom")
 
-    - Video with a VHS-style PNG sidecar containing prompt data
-    - Animated WebP with EXIF-embedded prompt JSON
-    - JPEG with EXIF-embedded prompt (unusual for ComfyUI)
 
-    PNGs always return False — the format badge already tells the user it's
-    a PNG, and they can always click for metadata.
+def _has_generation_data(path: Path) -> bool:
+    """Check whether a file contains actual *generation* data (sampler, seed, etc).
+
+    Matches the Majoor Assets Manager convention:
+      '+' = the embedded prompt/workflow contains a sampler node, meaning
+            the file was produced by a generation workflow (txt2img, img2img).
+      no '+' = no metadata at all, or metadata without sampling (e.g. a
+               pure compositing/utility workflow, or a manually saved image).
+
+    Detection approach (fast binary scan, no JSON parsing):
+      - PNG: check for tEXt/iTXt 'prompt' chunk AND a sampler class_type string
+      - Video: check VHS sidecar PNG the same way
+      - WebP/JPEG: check EXIF for prompt JSON starting with '{'
     """
     ext = path.suffix.lower()
     try:
-        # PNGs: ComfyUI always embeds prompt+workflow, so '+' is meaningless
         if ext == ".png":
-            return False
+            with open(path, "rb") as fh:
+                data = fh.read(262144)  # 256KB covers most prompt chunks
+            has_prompt = b"tEXtprompt\x00" in data or b"iTXtprompt\x00" in data
+            if not has_prompt:
+                return False
+            # Has prompt metadata — now check if it contains a sampler node
+            return any(marker in data for marker in _SAMPLER_MARKERS)
 
         if ext in VIDEO_EXTS:
-            # VHS sidecar PNG — noteworthy because videos don't natively carry workflow
             sidecar = path.with_suffix(".png")
             if sidecar.exists() and sidecar.is_file():
                 with open(sidecar, "rb") as fh:
                     sdata = fh.read(262144)
-                return b"tEXtprompt\x00" in sdata or b"iTXtprompt\x00" in sdata
+                has_prompt = b"tEXtprompt\x00" in sdata or b"iTXtprompt\x00" in sdata
+                if has_prompt:
+                    return any(marker in sdata for marker in _SAMPLER_MARKERS)
             return False
 
         if ext == ".webp" and _HAS_PIL:
@@ -171,7 +183,8 @@ def _has_embedded_workflow(path: Path) -> bool:
             if exif:
                 val = exif.get(0x0110, "")
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    return True
+                    # Check for sampler in the prompt JSON string
+                    return any(m.decode() in val for m in _SAMPLER_MARKERS)
             return False
 
         if ext in (".jpg", ".jpeg") and _HAS_PIL:
@@ -181,7 +194,7 @@ def _has_embedded_workflow(path: Path) -> bool:
             if exif:
                 val = exif.get(0x9286, "")  # UserComment
                 if isinstance(val, str) and val.strip().startswith("{"):
-                    return True
+                    return any(m.decode() in val for m in _SAMPLER_MARKERS)
             return False
     except Exception:
         pass
@@ -209,7 +222,7 @@ async def _detect_workflow_batch(files: list[dict], output_dir: Path) -> None:
         try:
             full = output_dir / f["relative_path"]
             if full.exists():
-                f["has_meta"] = _has_embedded_workflow(full)
+                f["has_meta"] = _has_generation_data(full)
         except Exception:
             pass
 
