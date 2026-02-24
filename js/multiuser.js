@@ -35,6 +35,53 @@ export function showToast(severity, summary, detail, life = 3000) {
 }
 
 /**
+ * Move a sidebar tab button to the bottom section of the sidebar
+ * (next to the settings gear icon).
+ */
+function _moveTabToBottom(tabId, tabTitle) {
+  const attempt = (retries = 0) => {
+    if (retries > 20) return; // give up after ~2s
+
+    // Find the sidebar nav container
+    const nav = document.querySelector(".side-tool-bar-container");
+    if (!nav) {
+      setTimeout(() => attempt(retries + 1), 100);
+      return;
+    }
+
+    // Find the bottom section (where settings lives)
+    const bottomSection = nav.querySelector(".side-tool-bar-end");
+    if (!bottomSection) {
+      setTimeout(() => attempt(retries + 1), 100);
+      return;
+    }
+
+    // Find our tab button by aria-label or title match
+    const allBtns = nav.querySelectorAll("a, button");
+    let tabBtn = null;
+    for (const btn of allBtns) {
+      const label = btn.getAttribute("aria-label") || btn.getAttribute("title") || "";
+      if (label === tabTitle || label === tabId || label.includes(tabTitle)) {
+        tabBtn = btn;
+        break;
+      }
+    }
+
+    if (!tabBtn) {
+      setTimeout(() => attempt(retries + 1), 100);
+      return;
+    }
+
+    // Move the button to the beginning of the bottom section
+    bottomSection.insertBefore(tabBtn, bottomSection.firstChild);
+    console.log(`[MultiUser] Moved "${tabTitle}" tab to bottom of sidebar`);
+  };
+
+  // Start attempting after a short delay to let the DOM settle
+  setTimeout(() => attempt(), 200);
+}
+
+/**
  * Register sidebar tabs with ComfyUI's native sidebar.
  * Guarded so it only executes once.
  */
@@ -47,11 +94,13 @@ function _registerSidebarTabs() {
     app.extensionManager.registerSidebarTab({
       id: "multiuser-profile",
       icon: "pi pi-user",
-      title: "MultiUser",
+      title: "User",
       tooltip: `Signed in as ${_currentUser.username}`,
       type: "custom",
       render: (el) => renderUserSidebar(el, _currentUser),
     });
+    // Move the User tab to the bottom of the sidebar (near settings)
+    _moveTabToBottom("multiuser-profile", "User");
   } catch (e) {
     console.warn("[MultiUser] Could not register user sidebar tab:", e.message);
   }
