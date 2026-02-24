@@ -64,8 +64,30 @@ const CSS = `
   border:1px solid transparent; transition:border-color .15s;
 }
 .mu-item:hover{border-color:var(--border-color,#4e4e4e)}
-.mu-item.selected{border-color:#236692}
+.mu-item.selected{border-color:#236692;box-shadow:0 0 0 2px rgba(35,102,146,.5)}
+.mu-item.selected::after{
+  content:'✓';position:absolute;top:4px;left:4px;z-index:2;
+  background:#236692;color:#fff;width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
+  box-shadow:0 1px 3px rgba(0,0,0,.5);
+}
 .mu-item img{width:100%;height:100%;object-fit:cover;display:block}
+
+/* === Selection bar === */
+.mu-sel-bar{
+  display:flex;align-items:center;gap:8px;padding:5px 8px;
+  background:linear-gradient(135deg,rgba(35,102,146,.2),rgba(35,102,146,.1));
+  border:1px solid rgba(35,102,146,.4);border-radius:4px;margin-bottom:6px;
+  font-size:11px;color:#5ba3d9;
+}
+.mu-sel-bar-count{font-weight:700}
+.mu-sel-bar-btn{
+  padding:2px 8px;border:1px solid rgba(91,163,217,.3);border-radius:3px;
+  background:transparent;color:#5ba3d9;cursor:pointer;font-size:10px;
+}
+.mu-sel-bar-btn:hover{background:rgba(91,163,217,.15)}
+.mu-sel-bar-btn.danger{color:#ef5350;border-color:rgba(239,83,80,.3)}
+.mu-sel-bar-btn.danger:hover{background:rgba(239,83,80,.15)}
 
 /* Hover overlay (gradient at bottom) */
 .mu-item .mu-ov{
@@ -381,6 +403,8 @@ let _tags = [];        // user's known tags
 let _debounce = null;
 let _mode = "personal"; // "personal" | "admin"
 let _endpoint = "/outputs"; // API endpoint for list
+let _selected = new Set();  // relative_paths of selected items
+let _lastClickIdx = -1;     // for shift-click range selection
 
 /* ────────────────────────────────────────────────────────────────────
    Public entry point (called by multiuser.js sidebar tab)
@@ -397,6 +421,7 @@ function _renderGalleryInto(el, mode) {
   _mode = mode || "personal";
   _endpoint = _mode === "admin" ? "/outputs/all" : "/outputs";
   _page = 1; _search = ""; _type = "all"; _userF = ""; _tagF = ""; _minR = 0;
+  _selected = new Set(); _lastClickIdx = -1;
 
   const root = _mk("div", "mu-gallery");
   _el_ = root;
@@ -416,6 +441,10 @@ function _renderGalleryInto(el, mode) {
 
   /* filters */
   const filt = _mk("div","mu-filters"); filt.id = "mu-filt"; root.appendChild(filt);
+
+  /* selection bar (hidden until items selected) */
+  const selBar = _mk("div","mu-sel-bar"); selBar.id = "mu-sel-bar"; selBar.style.display = "none";
+  root.appendChild(selBar);
 
   /* grid */
   const grid = _mk("div","mu-grid"); grid.id = "mu-grid"; root.appendChild(grid);
@@ -590,10 +619,38 @@ function _renderGrid(grid) {
     ov.appendChild(nm);
     item.appendChild(ov);
 
-    // click = lightbox
-    item.addEventListener("click", () => _openLB(f));
-    // right-click = context menu
-    item.addEventListener("contextmenu", e => _openCtx(e, f));
+    // Mark selected state from _selected set
+    if (_selected.has(f.relative_path)) item.classList.add("selected");
+
+    // click = lightbox or selection
+    item.addEventListener("click", (e) => {
+      const idx = _files.indexOf(f);
+      if (e.ctrlKey || e.metaKey) {
+        // Toggle individual selection
+        if (_selected.has(f.relative_path)) { _selected.delete(f.relative_path); item.classList.remove("selected"); }
+        else { _selected.add(f.relative_path); item.classList.add("selected"); }
+        _lastClickIdx = idx;
+        _renderSelBar();
+        return;
+      }
+      if (e.shiftKey && _lastClickIdx >= 0) {
+        // Range selection
+        const lo = Math.min(_lastClickIdx, idx), hi = Math.max(_lastClickIdx, idx);
+        for (let k = lo; k <= hi; k++) _selected.add(_files[k].relative_path);
+        _syncSelVisuals();
+        _renderSelBar();
+        return;
+      }
+      // Normal click: if items are selected, clear selection instead of opening lightbox
+      if (_selected.size > 0) { _selected.clear(); _syncSelVisuals(); _renderSelBar(); return; }
+      _openLB(f);
+    });
+    // right-click = context menu (bulk if selected)
+    item.addEventListener("contextmenu", e => {
+      if (_selected.size > 1 && _selected.has(f.relative_path)) { _openBulkCtx(e); return; }
+      if (_selected.size > 0 && !_selected.has(f.relative_path)) { _selected.clear(); _syncSelVisuals(); _renderSelBar(); }
+      _openCtx(e, f);
+    });
 
     grid.appendChild(item);
   }
@@ -687,6 +744,153 @@ function _ctxItem(menu, label, fn, danger) {
   menu.appendChild(d);
 }
 function _ctxSep(menu) { menu.appendChild(_mk("div","mu-ctx-sep")); }
+
+/* ────────────────────────────────────────────────────────────────────
+   Multi-select helpers
+   ──────────────────────────────────────────────────────────────────── */
+function _syncSelVisuals() {
+  const grid = _el_?.querySelector("#mu-grid");
+  if (!grid) return;
+  const items = grid.querySelectorAll(".mu-item");
+  items.forEach((el, i) => {
+    if (i < _files.length && _selected.has(_files[i].relative_path)) el.classList.add("selected");
+    else el.classList.remove("selected");
+  });
+}
+
+function _renderSelBar() {
+  const bar = _el_?.querySelector("#mu-sel-bar");
+  if (!bar) return;
+  if (_selected.size === 0) { bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+  bar.innerHTML = "";
+  const cnt = _mk("span","mu-sel-bar-count"); cnt.textContent = `${_selected.size} selected`; bar.appendChild(cnt);
+  const selAll = _mk("button","mu-sel-bar-btn"); selAll.textContent = "Select All";
+  selAll.onclick = () => { _files.forEach(f => _selected.add(f.relative_path)); _syncSelVisuals(); _renderSelBar(); };
+  bar.appendChild(selAll);
+  const clr = _mk("button","mu-sel-bar-btn"); clr.textContent = "Clear";
+  clr.onclick = () => { _selected.clear(); _syncSelVisuals(); _renderSelBar(); };
+  bar.appendChild(clr);
+}
+
+function _getSelectedFiles() {
+  return _files.filter(f => _selected.has(f.relative_path));
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Bulk context menu  (right-click when multiple items selected)
+   ──────────────────────────────────────────────────────────────────── */
+function _openBulkCtx(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  _closeCtx();
+
+  const sel = _getSelectedFiles();
+  const n = sel.length;
+  const m = _mk("div","mu-ctx");
+
+  // Header
+  const hdr = _mk("div","mu-ctx-item"); hdr.style.opacity = "0.6"; hdr.style.fontWeight = "600";
+  hdr.textContent = `${n} items selected`; m.appendChild(hdr);
+  _ctxSep(m);
+
+  // Bulk download
+  _ctxItem(m, `⬇ Download ${n} files`, () => {
+    for (const f of sel) {
+      const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click();
+    }
+    _toast(`Downloading ${n} files`);
+  });
+  _ctxSep(m);
+
+  // Bulk rate
+  const sr = _mk("div","mu-ctx-stars");
+  const sl = _mk("span","mu-ctx-stars-label"); sl.textContent = "Rate all:"; sr.appendChild(sl);
+  for (let i = 1; i <= 5; i++) {
+    const s = _mk("span"); s.textContent = "★"; s.className = "";
+    s.onmouseenter = () => { sr.querySelectorAll("span:not(.mu-ctx-stars-label)").forEach((x,j) => x.className = j < i ? "on" : ""); };
+    s.onmouseleave = () => { sr.querySelectorAll("span:not(.mu-ctx-stars-label)").forEach((x,j) => x.className = ""); };
+    s.onclick = async () => { _closeCtx(); await _bulkRate(sel, i); };
+    sr.appendChild(s);
+  }
+  m.appendChild(sr);
+  _ctxItem(m, "Clear all ratings", async () => { _closeCtx(); await _bulkRate(sel, 0); });
+  _ctxSep(m);
+
+  // Bulk tag
+  _ctxItem(m, `Add tag to ${n} files…`, () => { _closeCtx(); _bulkPromptTag(sel); });
+  // Bulk remove tag
+  const allTags = [...new Set(sel.flatMap(f => f.tags || []))];
+  if (allTags.length) {
+    _ctxItem(m, `Remove tag from ${n} files…`, () => { _closeCtx(); _bulkPromptRemoveTag(sel, allTags); });
+  }
+  _ctxSep(m);
+
+  // Bulk delete
+  _ctxItem(m, `Delete ${n} files`, () => { _closeCtx(); _bulkDelete(sel); }, true);
+
+  // Position
+  m.style.left = e.clientX + "px";
+  m.style.top = e.clientY + "px";
+  document.body.appendChild(m);
+  requestAnimationFrame(() => {
+    const r = m.getBoundingClientRect();
+    if (r.right > window.innerWidth) m.style.left = (window.innerWidth - r.width - 4) + "px";
+    if (r.bottom > window.innerHeight) m.style.top = (window.innerHeight - r.height - 4) + "px";
+  });
+  const closer = (ev) => { if (!m.contains(ev.target)) { _closeCtx(); document.removeEventListener("click", closer, true); } };
+  setTimeout(() => document.addEventListener("click", closer, true), 0);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Bulk operations
+   ──────────────────────────────────────────────────────────────────── */
+async function _bulkRate(files, rating) {
+  try {
+    const paths = files.map(f => f.relative_path);
+    const r = await apiPut("/outputs/bulk/rating", {file_paths: paths, rating});
+    if (r.ok) {
+      files.forEach(f => f.rating = rating);
+      _toast(`Rated ${files.length} files`);
+      _selected.clear(); _load();
+    } else { const e = await r.json().catch(()=>({})); _toast(e.error||"Bulk rate failed","error"); }
+  } catch(e) { _toast(e.message,"error"); }
+}
+
+async function _bulkPromptTag(files) {
+  const tag = prompt(`Add tag to ${files.length} files:`);
+  if (!tag?.trim()) return;
+  try {
+    const paths = files.map(f => f.relative_path);
+    const r = await apiPost("/outputs/bulk/tags", {file_paths: paths, tags: [_titleCase(tag.trim())]});
+    if (r.ok) { _toast(`Tagged ${files.length} files`); _selected.clear(); _loadTags(); _load(); }
+    else { const e = await r.json().catch(()=>({})); _toast(e.error||"Bulk tag failed","error"); }
+  } catch(e) { _toast(e.message,"error"); }
+}
+
+async function _bulkPromptRemoveTag(files, allTags) {
+  const tag = prompt(`Remove which tag? Available: ${allTags.join(", ")}`);
+  if (!tag?.trim()) return;
+  try {
+    const paths = files.map(f => f.relative_path);
+    const r = await apiPost("/outputs/bulk/tags/remove", {file_paths: paths, tag: _titleCase(tag.trim())});
+    if (r.ok) { _toast(`Removed tag from files`); _selected.clear(); _loadTags(); _load(); }
+    else { const e = await r.json().catch(()=>({})); _toast(e.error||"Remove tag failed","error"); }
+  } catch(e) { _toast(e.message,"error"); }
+}
+
+async function _bulkDelete(files) {
+  if (!confirm(`Delete ${files.length} files? This cannot be undone.`)) return;
+  try {
+    const items = files.map(f => ({filename: f.filename, subfolder: f.subfolder || ""}));
+    const r = await apiPost("/outputs/bulk/delete", {files: items});
+    if (r.ok) {
+      const d = await r.json();
+      _toast(`Deleted ${d.deleted||files.length} files`);
+      _selected.clear(); _load();
+    } else { const e = await r.json().catch(()=>({})); _toast(e.error||"Bulk delete failed","error"); }
+  } catch(e) { _toast(e.message,"error"); }
+}
 
 /* ────────────────────────────────────────────────────────────────────
    Prompt tag input (dialog-style)

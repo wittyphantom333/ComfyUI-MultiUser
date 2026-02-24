@@ -1115,3 +1115,187 @@ def setup_output_routes(routes):
         await db.execute("DELETE FROM output_ratings WHERE file_path = ?", (rel_path,))
 
         return web.json_response({"success": True})
+
+    # ------------------------------------------------------------------
+    #  Bulk operations
+    # ------------------------------------------------------------------
+
+    @routes.put("/multiuser/outputs/bulk/rating")
+    async def bulk_set_rating(request: web.Request):
+        """Set rating on multiple files.  Body: { file_paths: [...], rating: 0-5 }"""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        body = await request.json()
+        file_paths = body.get("file_paths", [])
+        rating = int(body.get("rating", 0))
+        if not file_paths:
+            return web.json_response({"error": "file_paths required"}, status=400)
+        if rating < 0 or rating > 5:
+            return web.json_response({"error": "rating must be 0-5"}, status=400)
+
+        output_dir = _get_output_dir()
+        db = await get_db()
+        all_users = await db.fetchall("SELECT username FROM users")
+        user_dirs = {u["username"] for u in all_users}
+        user_id = user["id"]
+        updated = 0
+
+        for fp in file_paths:
+            fp = fp.strip()
+            if not fp:
+                continue
+            full_path = (output_dir / fp).resolve()
+            if not str(full_path).startswith(str(output_dir.resolve())) or not full_path.exists():
+                continue
+            if not _check_access(user, full_path, output_dir, user_dirs):
+                continue
+
+            if rating == 0:
+                await db.execute(
+                    "DELETE FROM output_ratings WHERE user_id = ? AND file_path = ?",
+                    (user_id, fp),
+                )
+            else:
+                existing = await db.fetchone(
+                    "SELECT id FROM output_ratings WHERE user_id = ? AND file_path = ?",
+                    (user_id, fp),
+                )
+                if existing:
+                    await db.execute(
+                        "UPDATE output_ratings SET rating = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (rating, existing["id"]),
+                    )
+                else:
+                    await db.execute(
+                        "INSERT INTO output_ratings (user_id, file_path, rating) VALUES (?, ?, ?)",
+                        (user_id, fp, rating),
+                    )
+            updated += 1
+
+        return web.json_response({"success": True, "updated": updated})
+
+    @routes.post("/multiuser/outputs/bulk/tags")
+    async def bulk_add_tags(request: web.Request):
+        """Add tags to multiple files.  Body: { file_paths: [...], tags: [...] }"""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        body = await request.json()
+        file_paths = body.get("file_paths", [])
+        tags = body.get("tags", [])
+        if not file_paths or not tags:
+            return web.json_response({"error": "file_paths and tags required"}, status=400)
+
+        output_dir = _get_output_dir()
+        db = await get_db()
+        all_users = await db.fetchall("SELECT username FROM users")
+        user_dirs = {u["username"] for u in all_users}
+        clean_tags = list({t.strip().title() for t in tags if t.strip()})
+        updated = 0
+
+        for fp in file_paths:
+            fp = fp.strip()
+            if not fp:
+                continue
+            full_path = (output_dir / fp).resolve()
+            if not str(full_path).startswith(str(output_dir.resolve())) or not full_path.exists():
+                continue
+            if not _check_access(user, full_path, output_dir, user_dirs):
+                continue
+
+            for tag in clean_tags:
+                await db.execute(
+                    "INSERT OR IGNORE INTO output_tags (user_id, file_path, tag) VALUES (?, ?, ?)",
+                    (user["id"], fp, tag),
+                )
+            updated += 1
+
+        return web.json_response({"success": True, "updated": updated, "tags": clean_tags})
+
+    @routes.post("/multiuser/outputs/bulk/tags/remove")
+    async def bulk_remove_tag(request: web.Request):
+        """Remove a tag from multiple files.  Body: { file_paths: [...], tag: "..." }"""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        body = await request.json()
+        file_paths = body.get("file_paths", [])
+        tag = (body.get("tag", "") or "").strip().title()
+        if not file_paths or not tag:
+            return web.json_response({"error": "file_paths and tag required"}, status=400)
+
+        db = await get_db()
+        removed = 0
+        for fp in file_paths:
+            fp = fp.strip()
+            if not fp:
+                continue
+            await db.execute(
+                "DELETE FROM output_tags WHERE user_id = ? AND file_path = ? AND tag = ?",
+                (user["id"], fp, tag),
+            )
+            removed += 1
+
+        return web.json_response({"success": True, "removed": removed})
+
+    @routes.post("/multiuser/outputs/bulk/delete")
+    async def bulk_delete_files(request: web.Request):
+        """Delete multiple output files.  Body: { files: [{filename, subfolder}, ...] }"""
+        user = request.get("multiuser_user")
+        if not user:
+            return web.json_response({"error": "Not authenticated"}, status=401)
+
+        body = await request.json()
+        items = body.get("files", [])
+        if not items:
+            return web.json_response({"error": "files required"}, status=400)
+
+        output_dir = _get_output_dir()
+        db = await get_db()
+        deleted = 0
+        errors = []
+
+        for item in items:
+            filename = item.get("filename", "")
+            subfolder = item.get("subfolder", "")
+            if not filename:
+                continue
+
+            file_path = _resolve_file(output_dir, filename, subfolder)
+            if not file_path:
+                errors.append(f"{filename}: not found")
+                continue
+
+            # Access check
+            if not user.get("is_admin"):
+                rel = file_path.relative_to(output_dir.resolve())
+                parts = rel.parts
+                if len(parts) > 1:
+                    if parts[0] != user["username"]:
+                        errors.append(f"{filename}: access denied")
+                        continue
+                else:
+                    errors.append(f"{filename}: cannot delete shared files")
+                    continue
+
+            rel_path = str(file_path.relative_to(output_dir.resolve()))
+            try:
+                file_path.unlink()
+                deleted += 1
+                logger.info("User %s bulk-deleted output: %s", user["username"], file_path)
+            except OSError as e:
+                errors.append(f"{filename}: {e}")
+                continue
+
+            # Clean up DB records
+            await db.execute("DELETE FROM output_tags WHERE file_path = ?", (rel_path,))
+            await db.execute("DELETE FROM output_ratings WHERE file_path = ?", (rel_path,))
+
+        result = {"success": True, "deleted": deleted}
+        if errors:
+            result["errors"] = errors
+        return web.json_response(result)
