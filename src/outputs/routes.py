@@ -906,30 +906,33 @@ def setup_output_routes(routes):
         emb = meta.get("embedded", {})
         prompt_data = emb.get("prompt")
 
-        # Fallback: look up workflow_json from the generations table
-        # if no embedded prompt data was found
-        if not prompt_data:
-            try:
-                fname = file_path.name
-                rows = await db.fetchall(
-                    "SELECT workflow_json FROM generations "
-                    "WHERE output_paths IS NOT NULL AND status = 'completed' "
-                    "ORDER BY completed_at DESC"
-                )
-                for row in rows:
-                    op = row.get("output_paths") or row["output_paths"]
-                    if op:
-                        try:
-                            paths_list = json.loads(op) if isinstance(op, str) else op
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                        if isinstance(paths_list, list) and fname in paths_list:
+        # Look up generation record from the database
+        # (for execution_time_ms, and as workflow_json fallback)
+        try:
+            fname = file_path.name
+            rows = await db.fetchall(
+                "SELECT execution_time_ms, workflow_json, output_paths FROM generations "
+                "WHERE output_paths IS NOT NULL AND status = 'completed' "
+                "ORDER BY completed_at DESC"
+            )
+            for row in rows:
+                op = row.get("output_paths") or row["output_paths"]
+                if op:
+                    try:
+                        paths_list = json.loads(op) if isinstance(op, str) else op
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(paths_list, list) and fname in paths_list:
+                        et = row.get("execution_time_ms")
+                        if et is not None:
+                            meta["execution_time_ms"] = et
+                        if not prompt_data:
                             wf = row.get("workflow_json") or row["workflow_json"]
                             if wf:
                                 prompt_data = json.loads(wf) if isinstance(wf, str) else wf
-                            break
-            except Exception:
-                pass  # DB fallback is best-effort
+                        break
+        except Exception:
+            pass  # DB lookup is best-effort
 
         if isinstance(prompt_data, dict):
             meta["geninfo"] = _parse_comfyui_prompt(prompt_data)

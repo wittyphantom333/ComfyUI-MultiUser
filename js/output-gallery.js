@@ -240,17 +240,38 @@ const CSS = `
 }
 .mu-lb-tag-input:focus{border-color:#888}
 
-/* === Metadata side-panel (Majoor-inspired) === */
+/* === Main content area (image + metadata side by side) === */
+.mu-lb-main{
+  flex:1;display:flex;overflow:hidden;min-height:0;
+}
+
+/* === Metadata side-panel (always visible on right) === */
 .mu-meta{
-  position:fixed;right:0;top:0;bottom:0;width:420px;max-width:90vw;z-index:100002;
+  width:420px;min-width:280px;flex-shrink:0;
   background:rgba(0,0,0,.88);backdrop-filter:blur(10px);
   border-left:1px solid rgba(255,255,255,.12);
   overflow-y:auto;padding:16px;font-size:11px;color:var(--fg-color,#ddd);
-  box-shadow:-4px 0 16px rgba(0,0,0,.6);
 }
 .mu-meta h3{margin:0 0 14px;font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
 .mu-meta-close{background:none;border:none;color:#999;cursor:pointer;font-size:16px;padding:2px 4px}
 .mu-meta-close:hover{color:#fff}
+
+/* Actions row in bottom panel */
+.mu-lb-actions-row{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+}
+.mu-lb-actions{display:flex;gap:6px;align-items:center;margin-left:auto}
+
+/* Generation time display */
+.mu-meta-gentime{
+  border-radius:6px;padding:10px 14px;margin-bottom:10px;
+  display:flex;align-items:center;gap:10px;
+  background:linear-gradient(135deg, rgba(33,150,243,.14) 0%, rgba(33,150,243,.06) 100%);
+  border:1px solid rgba(33,150,243,.35);
+  border-left:3px solid #2196F3;
+}
+.mu-meta-gentime-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#2196F3}
+.mu-meta-gentime-val{font-size:16px;font-weight:700;color:#fff;font-family:'Consolas','Monaco','Courier New',monospace}
 
 /* Section boxes */
 .mu-meta-box{
@@ -636,7 +657,7 @@ function _openCtx(e, f) {
     _ctxItem(m, `Tags: ${f.tags.join(", ")}`, null);
   }
   _ctxSep(m);
-  _ctxItem(m, "Gen Info", () => { _closeCtx(); _openLB(f); setTimeout(() => _toggleMeta(f), 100); });
+  _ctxItem(m, "Gen Info", () => { _closeCtx(); _openLB(f); });
   _ctxItem(m, "Delete", () => { _closeCtx(); _deletefile(f); }, true);
 
   // Position
@@ -696,18 +717,6 @@ function _openLB(f) {
   top.appendChild(tl);
   const tr = _mk("div","mu-lb-top-right");
 
-  const btnDl = _mk("button","mu-lb-btn-dl"); btnDl.textContent = "Download";
-  btnDl.onclick = () => { const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click(); };
-  tr.appendChild(btnDl);
-
-  const btnMeta = _mk("button"); btnMeta.textContent = "Gen Info";
-  btnMeta.onclick = () => _toggleMeta(f);
-  tr.appendChild(btnMeta);
-
-  const btnDel = _mk("button","mu-lb-btn-del"); btnDel.textContent = "Delete";
-  btnDel.onclick = () => _deletefile(f);
-  tr.appendChild(btnDel);
-
   const btnX = _mk("button"); btnX.textContent = "✕";
   btnX.onclick = () => _closeLB();
   tr.appendChild(btnX);
@@ -741,7 +750,15 @@ function _openLB(f) {
     n.onclick = e => { e.stopPropagation(); _openLB(_files[idx+1]); };
     body.appendChild(n);
   }
-  wrap.appendChild(body);
+  /* main area: image + metadata side by side */
+  const main = _mk("div","mu-lb-main");
+  main.appendChild(body);
+
+  const metaPanel = _mk("div","mu-meta"); metaPanel.id = "mu-meta-panel";
+  metaPanel.onclick = e => e.stopPropagation();
+  metaPanel.appendChild(Object.assign(_mk("div","mu-loading"),{textContent:"Loading metadata…"}));
+  main.appendChild(metaPanel);
+  wrap.appendChild(main);
 
   /* bottom panel */
   const bot = _mk("div","mu-lb-bottom");
@@ -752,28 +769,41 @@ function _openLB(f) {
   info.innerHTML = `<span>${_bytes(f.size)}</span><span>${_date(f.modified)}</span><span>${_esc(f.relative_path)}</span>`;
   bot.appendChild(info);
 
-  // rating
+  // actions row: rating + tags + download/delete
+  const actRow = _mk("div","mu-lb-actions-row");
+
   const rr = _mk("div","mu-lb-rating");
   rr.appendChild(Object.assign(_mk("span","mu-lb-rating-lbl"),{textContent:"Rating:"}));
   const sd = _mk("div","mu-lb-stars"); sd.id = "mu-lb-stars";
   _renderLBStars(sd, f);
   rr.appendChild(sd);
-  bot.appendChild(rr);
+  actRow.appendChild(rr);
 
-  // tags
   const trow = _mk("div","mu-lb-tags"); trow.id = "mu-lb-tags";
   _renderLBTags(trow, f);
-  bot.appendChild(trow);
+  actRow.appendChild(trow);
 
+  const acts = _mk("div","mu-lb-actions");
+  const btnDl = _mk("button","mu-lb-btn-dl"); btnDl.textContent = "⬇ Download";
+  btnDl.onclick = () => { const a = _mk("a"); a.href = _viewUrl(f); a.download = f.filename; a.click(); };
+  acts.appendChild(btnDl);
+  const btnDel = _mk("button","mu-lb-btn-del"); btnDel.textContent = "🗑 Delete";
+  btnDel.onclick = () => _deletefile(f);
+  acts.appendChild(btnDel);
+  actRow.appendChild(acts);
+
+  bot.appendChild(actRow);
   wrap.appendChild(bot);
   document.body.appendChild(wrap);
   document.addEventListener("keydown", _lbKey);
+
+  // Auto-load metadata into the side panel
+  _loadMetaInto(f, metaPanel);
 }
 
 function _closeLB() {
   document.removeEventListener("keydown", _lbKey);
   document.getElementById("mu-lb")?.remove();
-  document.querySelectorAll(".mu-meta").forEach(e => e.remove());
   _lbFile = null;
 }
 
@@ -941,19 +971,17 @@ function _seedBox(seed) {
 }
 
 async function _toggleMeta(f) {
-  const ex = document.querySelector(".mu-meta");
-  if (ex) { ex.remove(); return; }
+  const panel = document.getElementById("mu-meta-panel");
+  if (panel) _loadMetaInto(f, panel);
+}
 
-  const panel = _mk("div","mu-meta");
-  panel.onclick = e => e.stopPropagation();
+async function _loadMetaInto(f, panel) {
+  panel.innerHTML = "";
 
   const h = _mk("h3"); h.textContent = "Generation Info";
-  const cb = _mk("button","mu-meta-close"); cb.textContent = "✕"; cb.onclick = () => panel.remove();
-  h.appendChild(cb);
   panel.appendChild(h);
 
   panel.appendChild(Object.assign(_mk("div","mu-loading"),{textContent:"Loading…"}));
-  document.body.appendChild(panel);
 
   try {
     const r = await apiGet(`/outputs/metadata?${new URLSearchParams({filename:f.filename,subfolder:f.subfolder||""})}`);
@@ -978,6 +1006,18 @@ async function _toggleMeta(f) {
     if (emb._codec) fileFields.push({label:"Codec", value:emb._codec});
     if (emb._fps) fileFields.push({label:"FPS", value:emb._fps});
     panel.appendChild(_paramBox("File Info", fileFields, _C.teal, {emphasis:true}));
+
+    // Generation time (from execution tracking)
+    if (m.execution_time_ms != null) {
+      const gt = _mk("div","mu-meta-gentime");
+      const gtl = _mk("span","mu-meta-gentime-lbl"); gtl.textContent = "Gen Time";
+      const secs = m.execution_time_ms / 1000;
+      const gtv = _mk("span","mu-meta-gentime-val");
+      gtv.textContent = secs >= 60 ? `${Math.floor(secs/60)}m ${(secs%60).toFixed(1)}s` : `${secs.toFixed(1)}s`;
+      gtv.onclick = () => _copyFlash(gtv, String(m.execution_time_ms) + "ms");
+      gt.appendChild(gtl); gt.appendChild(gtv);
+      panel.appendChild(gt);
+    }
 
     if (hasGeninfo) {
       // ── Positive Prompt ──
