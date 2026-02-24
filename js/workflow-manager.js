@@ -165,6 +165,49 @@ async function _loadWorkflow(wfId) {
   }
 }
 
+/**
+ * Render the workflows sidebar tab as a standalone panel.
+ * Called by ComfyUI's sidebar tab system with a DOM element to populate.
+ */
+export function renderWorkflowSidebar(el) {
+  _injectCss();
+  el.innerHTML = "";
+
+  const container = document.createElement("div");
+  container.style.cssText = "padding:12px;font-family:Arial,sans-serif;color:var(--descrip-text,#bbb);font-size:13px;";
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <h3 style="margin:0;font-size:15px;color:var(--input-text,#ddd);">My Workflows</h3>
+      <button class="mu-btn mu-btn-sm mu-btn-outline" id="mu-wf-sidebar-refresh"
+              style="padding:4px 10px;font-size:11px;border:1px solid var(--border-color,#4e4e4e);
+                     background:transparent;color:var(--descrip-text,#bbb);border-radius:5px;cursor:pointer;">Refresh</button>
+    </div>
+    <button id="mu-wf-sidebar-save"
+            style="width:100%;padding:8px;margin-bottom:12px;border:none;border-radius:6px;
+                   background:var(--comfy-input-bg,#535353);color:var(--input-text,#ddd);
+                   font-size:12px;font-weight:600;cursor:pointer;">Save Current Workflow</button>
+    <div id="mu-wf-sidebar-list" class="mu-wf-list">Loading…</div>
+  `;
+
+  el.appendChild(container);
+
+  // Use a thin wrapper so _loadList can find #mu-wf-list inside it
+  const listDiv = container.querySelector("#mu-wf-sidebar-list");
+  listDiv.id = "mu-wf-list";
+  const fakeSection = container;
+  fakeSection.querySelector = (sel) => {
+    if (sel === "#mu-wf-list") return listDiv;
+    return container.querySelector(sel);
+  };
+
+  setTimeout(() => {
+    container.querySelector("#mu-wf-sidebar-save")?.addEventListener("click", _saveCurrentWorkflow);
+    container.querySelector("#mu-wf-sidebar-refresh")?.addEventListener("click", () => _loadList(fakeSection));
+    _loadList(fakeSection);
+  }, 0);
+}
+
 // ── Helpers ──
 function _esc(s) {
   const el = document.createElement("span");

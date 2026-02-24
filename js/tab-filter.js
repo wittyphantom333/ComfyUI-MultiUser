@@ -26,6 +26,7 @@ const BUILTIN_TABS = new Set([
   "multiuser-gallery",
   "multiuser-admin",
   "multiuser-all-outputs",
+  "multiuser-workflows",
 ]);
 
 /**

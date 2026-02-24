@@ -18,6 +18,7 @@ import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
 import { renderUserSidebar } from "./user-menu.js";
 import { renderAdminSidebar } from "./admin-panel.js";
 import { renderOutputGallery, renderAllOutputsGallery } from "./output-gallery.js";
+import { renderWorkflowSidebar } from "./workflow-manager.js";
 import { initTabFilter, stopTabFilter } from "./tab-filter.js";
 
 /** Shared auth state */
@@ -115,6 +116,20 @@ function _registerSidebarTabs() {
     });
   } catch (e) {
     console.warn("[MultiUser] Could not register gallery sidebar tab:", e.message);
+  }
+
+  // ── Register Workflows sidebar tab ──
+  try {
+    app.extensionManager.registerSidebarTab({
+      id: "multiuser-workflows",
+      icon: "pi pi-save",
+      title: "My Workflows",
+      tooltip: "Save and manage your workflows",
+      type: "custom",
+      render: (el) => renderWorkflowSidebar(el),
+    });
+  } catch (e) {
+    console.warn("[MultiUser] Could not register workflows sidebar tab:", e.message);
   }
 
   // ── Register Admin sidebar tab (admins only) ──
