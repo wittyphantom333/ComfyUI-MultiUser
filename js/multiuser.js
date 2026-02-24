@@ -70,8 +70,8 @@ function _moveTabToBottom(tabId) {
       return;
     }
 
-    // Move the button to the beginning of the bottom section
-    bottom.insertBefore(tabBtn, bottom.firstChild);
+    // Move the button to the very end of the bottom section
+    bottom.appendChild(tabBtn);
     console.log(`[MultiUser] Moved "${tabId}" tab to bottom of sidebar`);
   };
 
