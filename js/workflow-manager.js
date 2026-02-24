@@ -192,19 +192,19 @@ export function renderWorkflowSidebar(el) {
 
   el.appendChild(container);
 
-  // Use a thin wrapper so _loadList can find #mu-wf-list inside it
+  // _loadList expects a section element with querySelector("#mu-wf-list")
   const listDiv = container.querySelector("#mu-wf-sidebar-list");
   listDiv.id = "mu-wf-list";
-  const fakeSection = container;
-  fakeSection.querySelector = (sel) => {
+  const origQuerySelector = HTMLElement.prototype.querySelector.bind(container);
+  container.querySelector = (sel) => {
     if (sel === "#mu-wf-list") return listDiv;
-    return container.querySelector(sel);
+    return origQuerySelector(sel);
   };
 
   setTimeout(() => {
-    container.querySelector("#mu-wf-sidebar-save")?.addEventListener("click", _saveCurrentWorkflow);
-    container.querySelector("#mu-wf-sidebar-refresh")?.addEventListener("click", () => _loadList(fakeSection));
-    _loadList(fakeSection);
+    origQuerySelector("#mu-wf-sidebar-save")?.addEventListener("click", _saveCurrentWorkflow);
+    origQuerySelector("#mu-wf-sidebar-refresh")?.addEventListener("click", () => _loadList(container));
+    _loadList(container);
   }, 0);
 }
 
