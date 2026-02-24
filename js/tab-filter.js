@@ -31,13 +31,43 @@ const BUILTIN_TABS = new Set([
 /**
  * Sidebar icons that may not be registered as extension-manager tabs
  * (e.g. ComfyUI built-in bottom-bar buttons).  We match them in the DOM
- * by tab-button class name, button title/aria-label, or icon class and
- * hide them when a deny rule exists.
+ * by dedicated class, button aria-label, or Iconify icon class.
+ *
+ * `matchClass`  — a direct CSS selector for the button / wrapper element.
+ * `matchLabel`   — regex tested against aria-label / title attributes.
+ * `matchIconCSS` — CSS selector for the Iconify icon <i> element inside the button.
+ * `isWrapper`     — true when the target is a wrapper <div> rather than a <button>.
  */
 const SIDEBAR_ICONS = [
-  { id: "settings",  label: "Settings",  matchTitle: /^settings$/i,  matchIcon: "pi-cog" },
-  { id: "templates", label: "Templates", matchTitle: /^templates?$/i, matchIcon: "pi-clipboard" },
-  { id: "console",   label: "Console",   matchTitle: /^(console|logs?)$/i, matchIcon: "pi-list" },
+  {
+    id: "logo-menu",
+    label: "Logo Menu",
+    matchClass: ".comfy-menu-button-wrapper",
+    matchLabel: null,
+    matchIconCSS: null,
+    isWrapper: true,
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    matchClass: null,
+    matchLabel: /^settings$/i,
+    matchIconCSS: ".icon-\\[lucide--settings\\]",
+  },
+  {
+    id: "templates",
+    label: "Templates",
+    matchClass: ".templates-tab-button",
+    matchLabel: /templates?/i,
+    matchIconCSS: ".icon-\\[comfy--template\\]",
+  },
+  {
+    id: "console",
+    label: "Console",
+    matchClass: null,
+    matchLabel: /^(console|toggle bottom panel|logs?)$/i,
+    matchIconCSS: ".icon-\\[ph--terminal-bold\\]",
+  },
 ];
 
 /** State */
@@ -121,51 +151,61 @@ function _enforceFilter() {
 }
 
 /**
- * Find a sidebar button element for a given icon definition.
- * Tries multiple strategies: tab-button class, title/aria-label, icon class.
+ * Find the DOM element for a given sidebar icon definition.
+ * Returns the <button> (or wrapper <div> for the logo) to hide/show.
  */
-function _findSidebarButton(icon) {
+function _findSidebarElement(icon) {
   const sidebar = document.querySelector(".side-tool-bar-container");
   if (!sidebar) return null;
 
-  // Strategy 1: ComfyUI tab-button class pattern
-  const byClass = sidebar.querySelector(`.${icon.id}-tab-button`);
-  if (byClass) return byClass;
-
-  // Strategy 2: Match buttons by title or aria-label
-  for (const btn of sidebar.querySelectorAll("button")) {
-    const title = (btn.getAttribute("title") || btn.getAttribute("aria-label") || "").trim();
-    if (title && icon.matchTitle.test(title)) return btn;
+  // Strategy 1: Dedicated class selector (e.g. ".templates-tab-button", ".comfy-menu-button-wrapper")
+  if (icon.matchClass) {
+    const el = sidebar.querySelector(icon.matchClass);
+    if (el) return el;
   }
 
-  // Strategy 3: Match by PrimeVue icon class on a child element
-  if (icon.matchIcon) {
-    const iconEl = sidebar.querySelector(`.${icon.matchIcon}`);
-    if (iconEl) return iconEl.closest("button");
+  // Strategy 2: Match by aria-label / title on buttons
+  if (icon.matchLabel) {
+    for (const btn of sidebar.querySelectorAll("button")) {
+      const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").trim();
+      if (label && icon.matchLabel.test(label)) return btn;
+    }
+  }
+
+  // Strategy 3: Match by Iconify icon CSS selector on a child <i>, then climb to button
+  if (icon.matchIconCSS) {
+    try {
+      const iconEl = sidebar.querySelector(icon.matchIconCSS);
+      if (iconEl) {
+        const btn = iconEl.closest("button");
+        if (btn) return btn;
+      }
+    } catch { /* selector may not be supported in older browsers */ }
   }
 
   return null;
 }
 
 /**
- * Hide or show sidebar icon buttons based on deny rules.
- * This handles icons that aren't registered as extension-manager tabs.
+ * Hide or show sidebar icon buttons (and the logo wrapper) based on deny rules.
+ * This handles elements that aren't registered as extension-manager tabs.
  */
 function _enforceSidebarIconFilter() {
   if (!_filterActive || _isAdmin) return;
 
   for (const icon of SIDEBAR_ICONS) {
-    const btn = _findSidebarButton(icon);
-    if (!btn) continue;
+    const el = _findSidebarElement(icon);
+    if (!el) continue;
 
-    if (_matchesAny(icon.id, _deniedPatterns)) {
-      if (btn.style.display !== "none") {
-        btn.style.display = "none";
+    const shouldHide = _matchesAny(icon.id, _deniedPatterns);
+    if (shouldHide) {
+      if (el.style.display !== "none") {
+        el.style.display = "none";
         console.log(`[MultiUser] Hidden sidebar icon: ${icon.id}`);
       }
     } else {
-      if (btn.style.display === "none") {
-        btn.style.display = "";
+      if (el.style.display === "none") {
+        el.style.display = "";
       }
     }
   }
