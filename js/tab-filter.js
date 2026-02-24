@@ -28,6 +28,18 @@ const BUILTIN_TABS = new Set([
   "multiuser-all-outputs",
 ]);
 
+/**
+ * Sidebar icons that may not be registered as extension-manager tabs
+ * (e.g. ComfyUI built-in bottom-bar buttons).  We match them in the DOM
+ * by tab-button class name, button title/aria-label, or icon class and
+ * hide them when a deny rule exists.
+ */
+const SIDEBAR_ICONS = [
+  { id: "settings",  label: "Settings",  matchTitle: /^settings$/i,  matchIcon: "pi-cog" },
+  { id: "templates", label: "Templates", matchTitle: /^templates?$/i, matchIcon: "pi-clipboard" },
+  { id: "console",   label: "Console",   matchTitle: /^(console|logs?)$/i, matchIcon: "pi-list" },
+];
+
 /** State */
 let _approvedPatterns = [];   // explicit allow rules from backend
 let _deniedPatterns = [];     // explicit deny rules from backend
@@ -101,7 +113,62 @@ function _enforceFilter() {
   } catch (e) {
     // extensionManager may not be ready yet
   }
+
+  // Also enforce visibility of special sidebar icons (settings, templates, console)
+  _enforceSidebarIconFilter();
+
   return removed;
+}
+
+/**
+ * Find a sidebar button element for a given icon definition.
+ * Tries multiple strategies: tab-button class, title/aria-label, icon class.
+ */
+function _findSidebarButton(icon) {
+  const sidebar = document.querySelector(".side-tool-bar-container");
+  if (!sidebar) return null;
+
+  // Strategy 1: ComfyUI tab-button class pattern
+  const byClass = sidebar.querySelector(`.${icon.id}-tab-button`);
+  if (byClass) return byClass;
+
+  // Strategy 2: Match buttons by title or aria-label
+  for (const btn of sidebar.querySelectorAll("button")) {
+    const title = (btn.getAttribute("title") || btn.getAttribute("aria-label") || "").trim();
+    if (title && icon.matchTitle.test(title)) return btn;
+  }
+
+  // Strategy 3: Match by PrimeVue icon class on a child element
+  if (icon.matchIcon) {
+    const iconEl = sidebar.querySelector(`.${icon.matchIcon}`);
+    if (iconEl) return iconEl.closest("button");
+  }
+
+  return null;
+}
+
+/**
+ * Hide or show sidebar icon buttons based on deny rules.
+ * This handles icons that aren't registered as extension-manager tabs.
+ */
+function _enforceSidebarIconFilter() {
+  if (!_filterActive || _isAdmin) return;
+
+  for (const icon of SIDEBAR_ICONS) {
+    const btn = _findSidebarButton(icon);
+    if (!btn) continue;
+
+    if (_matchesAny(icon.id, _deniedPatterns)) {
+      if (btn.style.display !== "none") {
+        btn.style.display = "none";
+        console.log(`[MultiUser] Hidden sidebar icon: ${icon.id}`);
+      }
+    } else {
+      if (btn.style.display === "none") {
+        btn.style.display = "";
+      }
+    }
+  }
 }
 
 /**
@@ -184,5 +251,5 @@ export function getRegisteredTabs() {
   }
 }
 
-/** Expose BUILTIN_TABS for the admin panel. */
-export { BUILTIN_TABS };
+/** Expose BUILTIN_TABS and SIDEBAR_ICONS for the admin panel. */
+export { BUILTIN_TABS, SIDEBAR_ICONS };

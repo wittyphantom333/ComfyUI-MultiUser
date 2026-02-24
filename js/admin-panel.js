@@ -7,7 +7,7 @@
  */
 
 import { apiGet, apiPost, apiPut, apiDelete } from "./api.js";
-import { getRegisteredTabs, BUILTIN_TABS } from "./tab-filter.js";
+import { getRegisteredTabs, BUILTIN_TABS, SIDEBAR_ICONS } from "./tab-filter.js";
 
 const ADMIN_CSS = `
   .mu-admin {
@@ -783,6 +783,45 @@ async function _renderSidebarManager(content) {
               `).join('')}
             </tbody>
           </table>
+          <h4 style="margin:16px 0 6px;font-size:12px;color:var(--input-text,#ddd);">Sidebar Icons</h4>
+          <p style="color:#888;font-size:11px;margin:0 0 8px 0;">
+            Control visibility of the Settings, Templates, and Console buttons in the sidebar.
+          </p>
+          <table class="mu-admin-table" id="mu-sidebar-icons-table">
+            <thead>
+              <tr>
+                <th>Icon</th>
+                ${nonAdminGroups.map(g => `<th style="text-align:center;font-size:9px;">${g.name}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${SIDEBAR_ICONS.map(icon => `
+                <tr>
+                  <td>
+                    <strong>${icon.label}</strong>
+                    <div style="color:#888;font-size:10px;">Sidebar icon button</div>
+                    <code style="background:var(--comfy-input-bg,#222);padding:1px 4px;border-radius:3px;font-size:10px;color:#aaa;">${icon.id}</code>
+                  </td>
+                  ${nonAdminGroups.map(g => {
+                    const isDenied = denyMap[g.id]?.has(icon.id);
+                    return `
+                      <td style="text-align:center;vertical-align:middle;">
+                        <label style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;font-size:10px;">
+                          <input type="checkbox"
+                                 class="mu-sidebar-icon-deny-toggle"
+                                 data-icon-id="${icon.id}"
+                                 data-group-id="${g.id}"
+                                 ${isDenied ? "checked" : ""} />
+                          <span style="color:${isDenied ? '#ff6b6b' : '#6bff8b'};font-weight:600;">
+                            ${isDenied ? 'Hidden' : 'Shown'}
+                          </span>
+                        </label>
+                      </td>`;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
         `}
     `;
 
@@ -852,6 +891,40 @@ async function _renderSidebarManager(content) {
           if (permIdMap[denyKey]) {
             await apiDelete(`/permissions/${permIdMap[denyKey]}`);
             _toast("success", `Showing '${_tabLabel({id: tabId})}' for group`);
+          }
+        }
+        _renderSidebarManager(content);
+      });
+    });
+
+    // ── Bind: Sidebar icon deny toggles ──
+    content.querySelectorAll(".mu-sidebar-icon-deny-toggle").forEach(cb => {
+      cb.addEventListener("change", async () => {
+        const iconId = cb.dataset.iconId;
+        const groupId = parseInt(cb.dataset.groupId);
+        const shouldDeny = cb.checked;
+        const iconLabel = SIDEBAR_ICONS.find(i => i.id === iconId)?.label || iconId;
+
+        if (shouldDeny) {
+          const res = await apiPost("/permissions", {
+            group_id: groupId,
+            resource_type: "sidebar",
+            resource_pattern: iconId,
+            action: "deny",
+            priority: 0,
+          });
+          if (res.ok) {
+            _toast("success", `Hidden '${iconLabel}' icon for group`);
+          } else {
+            const d = await res.json();
+            _toast("error", d.error || "Error");
+            cb.checked = false;
+          }
+        } else {
+          const denyKey = `${groupId}:${iconId}:deny`;
+          if (permIdMap[denyKey]) {
+            await apiDelete(`/permissions/${permIdMap[denyKey]}`);
+            _toast("success", `Showing '${iconLabel}' icon for group`);
           }
         }
         _renderSidebarManager(content);
