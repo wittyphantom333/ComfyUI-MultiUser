@@ -18,6 +18,7 @@ import { loadPermissions, isNodeAllowed } from "./permission-filter.js";
 import { renderUserSidebar } from "./user-menu.js";
 import { renderAdminSidebar } from "./admin-panel.js";
 import { renderOutputGallery, renderAllOutputsGallery } from "./output-gallery.js";
+import { renderInputGallery, renderAllInputsGallery } from "./input-gallery.js";
 import { renderWorkflowSidebar } from "./workflow-manager.js";
 import { initTabFilter, stopTabFilter } from "./tab-filter.js";
 
@@ -118,6 +119,20 @@ function _registerSidebarTabs() {
     console.warn("[MultiUser] Could not register gallery sidebar tab:", e.message);
   }
 
+  // ── Register Input Gallery sidebar tab ──
+  try {
+    app.extensionManager.registerSidebarTab({
+      id: "multiuser-inputs",
+      icon: "pi pi-upload",
+      title: "My Inputs",
+      tooltip: "Browse and upload your input files",
+      type: "custom",
+      render: (el) => renderInputGallery(el),
+    });
+  } catch (e) {
+    console.warn("[MultiUser] Could not register input gallery sidebar tab:", e.message);
+  }
+
   // ── Register Workflows sidebar tab ──
   try {
     app.extensionManager.registerSidebarTab({
@@ -159,6 +174,20 @@ function _registerSidebarTabs() {
       });
     } catch (e) {
       console.warn("[MultiUser] Could not register all-outputs sidebar tab:", e.message);
+    }
+
+    // ── Register All Inputs gallery (admin only) ──
+    try {
+      app.extensionManager.registerSidebarTab({
+        id: "multiuser-all-inputs",
+        icon: "pi pi-cloud-upload",
+        title: "All Inputs",
+        tooltip: "Browse all users' inputs (admin)",
+        type: "custom",
+        render: (el) => renderAllInputsGallery(el),
+      });
+    } catch (e) {
+      console.warn("[MultiUser] Could not register all-inputs sidebar tab:", e.message);
     }
   }
 }
