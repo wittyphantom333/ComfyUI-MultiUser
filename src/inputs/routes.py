@@ -206,24 +206,19 @@ def setup_input_routes(routes):
         search = request.query.get("search", "").strip().lower()
         type_filter = request.query.get("type", "all")
 
-        # ── Collect files: user's subfolder + root-level shared files ──
+        # ── Collect files with STRICT scoping ──
+        # EVERY user (admin or not) only sees their own subfolder here.
+        # Admins use the separate /inputs/all endpoint for cross-user browsing.
         files: list[dict] = []
 
-        # User's own subfolder
         user_dir = input_dir / username
+        # Auto-create the user's input dir so they have somewhere to upload
+        user_dir.mkdir(parents=True, exist_ok=True)
+
         if user_dir.is_dir():
             for entry in user_dir.rglob("*"):
                 if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
                     files.append(_file_info(entry, input_dir))
-
-        # Root-level files (shared/legacy — not inside any user folder)
-        db = await get_db()
-        all_users = await db.fetchall("SELECT username FROM users")
-        user_dirs = {u["username"] for u in all_users}
-
-        for entry in input_dir.iterdir():
-            if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                files.append(_file_info(entry, input_dir))
 
         logger.info(
             "list_inputs: user=%s found %d files before filters",
