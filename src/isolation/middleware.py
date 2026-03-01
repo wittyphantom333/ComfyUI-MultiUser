@@ -4,9 +4,13 @@ Intercepts ComfyUI endpoints to:
   1. Route SaveImage outputs to per-user subdirectories.
   2. Filter /history to show only the authenticated user's executions.
   3. Filter /view (output image serving) to the user's own folder.
+  4. Route /upload/image+mask into per-user input subdirectories.
+  5. Filter /object_info so node dropdowns only list user's own input files.
 """
 import json as json_mod
 import logging
+import os
+
 from aiohttp import web
 
 import server as comfyui_server  # ComfyUI's PromptServer module
@@ -21,6 +25,8 @@ _HISTORY_PREFIXES = ("/history", "/api/history")
 _VIEW_PATHS = ("/view", "/api/view")
 _QUEUE_PATHS = ("/queue", "/queue/", "/api/queue", "/api/queue/")
 _INTERRUPT_PATHS = ("/interrupt", "/interrupt/", "/api/interrupt", "/api/interrupt/")
+_UPLOAD_PATHS = ("/upload/image", "/api/upload/image")
+_OBJECT_INFO_PATHS = ("/object_info", "/object_info/", "/api/object_info", "/api/object_info/")
 
 
 def _is_enabled(key: str) -> bool:
@@ -116,12 +122,274 @@ def install_isolation_middleware(app: web.Application) -> None:
         ):
             return await _filter_interrupt(request, handler, user)
 
+        # ── 6. Per-user input uploads ──
+        # Rewrite the subfolder in upload requests so files land in
+        # input/{username}/{original_subfolder}/ instead of input/.
+        if (
+            request.method == "POST"
+            and request.path in _UPLOAD_PATHS
+            and user
+            and not user.get("is_admin")
+            and _is_enabled("per_user_inputs")
+        ):
+            return await _rewrite_upload(request, handler, user)
+
+        # ── 7. Filter /object_info — restrict input file lists per user ──
+        if (
+            request.method == "GET"
+            and any(
+                request.path == p or request.path.startswith(p)
+                for p in _OBJECT_INFO_PATHS
+            )
+            and user
+            and not user.get("is_admin")
+            and _is_enabled("per_user_inputs")
+        ):
+            return await _filter_object_info(request, handler, user)
+
         return await handler(request)
 
     # Insert right after auth middleware (position 1) so it rewrites the
     # request body before the prompt-tracking middleware reads it.
     app.middlewares.insert(1, isolation_middleware)
     logger.info("User workspace isolation middleware installed")
+
+
+# ---------------------------------------------------------------------------
+#  /upload/image + /upload/mask — redirect into input/{username}/
+# ---------------------------------------------------------------------------
+
+async def _rewrite_upload(
+    request: web.Request, handler, user: dict
+) -> web.Response:
+    """Re-route an upload so the file lands in ``input/{username}/``.
+
+    ComfyUI's ``image_upload()`` reads a ``subfolder`` field from the POST
+    body.  We read the multipart form, prepend ``{username}/`` to that
+    subfolder, and write the file ourselves (mirroring ComfyUI logic) so
+    we don't have to hack aiohttp request internals.
+    """
+    import folder_paths
+    import hashlib as _hashlib
+
+    username = user["username"]
+
+    try:
+        post = await request.post()
+    except Exception:
+        return web.json_response({"error": "Malformed upload body"}, status=400)
+
+    image = post.get("image")
+    if not image or not getattr(image, "file", None):
+        return web.Response(status=400)
+
+    filename = image.filename
+    if not filename:
+        return web.Response(status=400)
+
+    overwrite = post.get("overwrite")
+    image_upload_type = post.get("type") or "input"
+
+    # Only redirect input-type uploads; output/temp pass through to ComfyUI.
+    if image_upload_type != "input":
+        return await handler(request)
+
+    # Resolve destination directory
+    upload_dir = folder_paths.get_input_directory()
+
+    # Prepend username to the subfolder
+    orig_subfolder = post.get("subfolder", "")
+    if orig_subfolder:
+        subfolder = os.path.join(username, os.path.normpath(orig_subfolder))
+    else:
+        subfolder = username
+
+    full_output_folder = os.path.join(upload_dir, os.path.normpath(subfolder))
+    filepath = os.path.abspath(os.path.join(full_output_folder, filename))
+
+    # Security: verify the path stays inside the upload dir
+    if os.path.commonpath((upload_dir, filepath)) != upload_dir:
+        return web.Response(status=400)
+
+    os.makedirs(full_output_folder, exist_ok=True)
+
+    split = os.path.splitext(filename)
+    image_is_duplicate = False
+
+    def _file_hash(path):
+        h = _hashlib.sha256()
+        with open(path, "rb") as f:
+            h.update(f.read())
+        return h.hexdigest()
+
+    def _stream_hash(stream):
+        h = _hashlib.sha256()
+        h.update(stream.read())
+        stream.seek(0)
+        return h.hexdigest()
+
+    if overwrite in ("true", "1"):
+        pass
+    else:
+        i = 1
+        while os.path.exists(filepath):
+            try:
+                if _file_hash(filepath) == _stream_hash(image.file):
+                    image_is_duplicate = True
+                    break
+            except Exception:
+                pass
+            filename = f"{split[0]} ({i}){split[1]}"
+            filepath = os.path.join(full_output_folder, filename)
+            i += 1
+
+    if not image_is_duplicate:
+        image.file.seek(0)
+        with open(filepath, "wb") as f:
+            f.write(image.file.read())
+
+    logger.info("Upload isolation: %s → %s/%s", username, subfolder, filename)
+
+    return web.json_response({
+        "name": filename,
+        "subfolder": subfolder,
+        "type": image_upload_type,
+    })
+
+
+# ---------------------------------------------------------------------------
+#  /object_info — filter input file lists to the current user
+# ---------------------------------------------------------------------------
+
+async def _filter_object_info(
+    request: web.Request, handler, user: dict
+) -> web.Response:
+    """Filter ``/object_info`` so node dropdowns only list the user's input files.
+
+    For every node input that includes ``"image_upload": true``, replace the
+    file list with entries from ``input/{username}/`` only.  The file names
+    are returned as ``{username}/file.png`` so that ComfyUI's path resolution
+    (``folder_paths.get_annotated_filepath``) resolves them correctly inside
+    the input directory.
+    """
+    import folder_paths
+
+    response = await handler(request)
+    if response.status != 200:
+        return response
+
+    try:
+        body = response.body
+        if isinstance(body, bytes):
+            data = json_mod.loads(body)
+        else:
+            data = {}
+    except Exception:
+        return response
+
+    if not isinstance(data, dict):
+        return response
+
+    username = user["username"]
+    input_dir = folder_paths.get_input_directory()
+    user_dir = os.path.join(input_dir, username)
+
+    # Build the authoritative list of this user's input files (relative paths
+    # prefixed with username/).
+    user_files: list[str] = []
+    if os.path.isdir(user_dir):
+        for dirpath, _subdirs, filenames in os.walk(user_dir):
+            for fname in filenames:
+                abs_path = os.path.join(dirpath, fname)
+                rel = os.path.relpath(abs_path, input_dir)
+                user_files.append(rel)
+
+    # Include files in the root input/ dir that are NOT inside any other
+    # user's subfolder (shared assets, legacy files, etc.).
+    from ..db.factory import get_db
+    db = await get_db()
+    all_users_rows = await db.fetchall("SELECT username FROM users")
+    all_usernames = {r["username"] for r in all_users_rows}
+
+    try:
+        root_entries = os.listdir(input_dir)
+    except OSError:
+        root_entries = []
+
+    for entry in root_entries:
+        full = os.path.join(input_dir, entry)
+        if os.path.isfile(full):
+            # Root-level file — shared with everyone
+            user_files.append(entry)
+        elif os.path.isdir(full) and entry not in all_usernames:
+            # Directory that is NOT a user folder — shared assets
+            for dirpath, _subdirs, filenames in os.walk(full):
+                for fname in filenames:
+                    abs_path = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(abs_path, input_dir)
+                    user_files.append(rel)
+
+    user_files_set = set(user_files)
+
+    # Walk every node definition and filter inputs marked with image_upload
+    modified = False
+    for node_name, node_info in data.items():
+        if not isinstance(node_info, dict):
+            continue
+        input_defs = node_info.get("input")
+        if not isinstance(input_defs, dict):
+            continue
+
+        for category in ("required", "optional"):
+            cat_inputs = input_defs.get(category)
+            if not isinstance(cat_inputs, dict):
+                continue
+
+            for input_name, input_spec in cat_inputs.items():
+                if not isinstance(input_spec, (list, tuple)) or len(input_spec) < 2:
+                    continue
+
+                file_list, opts = input_spec[0], input_spec[1]
+                if not isinstance(opts, dict) or not opts.get("image_upload"):
+                    continue
+
+                if not isinstance(file_list, list):
+                    continue
+
+                # This input's image_folder determines which dir it lists from.
+                # Only filter "input"-folder lists; output/temp stay untouched.
+                image_folder = opts.get("image_folder", "input")
+                if image_folder != "input":
+                    continue
+
+                # Filter the file list: keep files this user owns + shared
+                filtered = [f for f in file_list if f in user_files_set]
+
+                # Also add user's own files that may be absent from the
+                # original list (LoadImage only does os.listdir on root).
+                for uf in user_files:
+                    if uf not in filtered:
+                        filtered.append(uf)
+
+                # Apply content-type filtering like the original node does
+                try:
+                    filtered = folder_paths.filter_files_content_types(
+                        filtered, ["image"]
+                    )
+                except Exception:
+                    pass
+
+                filtered.sort()
+                if isinstance(input_spec, tuple):
+                    cat_inputs[input_name] = (filtered, opts) + input_spec[2:]
+                else:
+                    cat_inputs[input_name] = [filtered, opts] + list(input_spec[2:])
+                modified = True
+
+    if modified:
+        return web.json_response(data)
+
+    return response
 
 
 
@@ -211,8 +479,25 @@ async def _filter_view(
 
     username = user["username"]
 
-    # Only gate "output" type — temp previews and inputs are unrestricted.
     img_type = request.query.get("type", "output")
+
+    # Gate input files — non-admins can only view their own input subfolder
+    if img_type == "input" and _is_enabled("per_user_inputs"):
+        full_path = f"{subfolder}/{filename}" if subfolder else filename
+        top_dir = full_path.split("/")[0] if "/" in full_path else None
+        if top_dir and top_dir != username:
+            from ..db.factory import get_db
+            db = await get_db()
+            owner = await db.fetchone(
+                "SELECT id FROM users WHERE username = ?", (top_dir,)
+            )
+            if owner:
+                return web.json_response(
+                    {"error": "Access denied — you can only view your own inputs"},
+                    status=403,
+                )
+
+    # Gate output files
     if img_type == "output":
         # Build the effective path the same way ComfyUI does:
         #   subfolder="username"  filename="ComfyUI_00001_.png"

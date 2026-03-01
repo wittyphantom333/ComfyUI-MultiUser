@@ -90,6 +90,11 @@ isolation:
   # go to  output/{username}/ instead of the shared output/ directory.
   per_user_outputs: true
 
+  # Route uploads and input-file browsing through per-user subdirectories
+  # inside input/{username}/.  Non-admin node dropdowns (e.g. LoadImage)
+  # will only list the user's own files plus shared root-level assets.
+  per_user_inputs: true
+
   # Restrict non-admin users to viewing only their own output images.
   restrict_output_access: true
 
