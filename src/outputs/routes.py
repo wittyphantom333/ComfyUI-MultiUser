@@ -116,6 +116,31 @@ def _check_access(user: dict, file_path: Path, output_dir: Path, user_dirs: set)
     return True  # unknown subfolder, treat as shared
 
 
+def _is_video_sidecar(path: Path) -> bool:
+    """Return True if this image file is a VHS-style sidecar for a video.
+
+    Video nodes (e.g. VHS/VideoHelperSuite) save a companion .png with the
+    same base name as the video.  That PNG holds the workflow metadata and
+    acts as a thumbnail — it should not appear as its own gallery item.
+    """
+    if path.suffix.lower() not in IMAGE_EXTS:
+        return False
+    stem = path.stem
+    parent = path.parent
+    return any(
+        (parent / (stem + ext)).is_file()
+        for ext in VIDEO_EXTS
+    )
+
+
+def _get_video_sidecar(video_path: Path) -> Optional[Path]:
+    """Return the sidecar PNG for a video file, or None."""
+    sidecar = video_path.with_suffix(".png")
+    if sidecar.exists() and sidecar.is_file():
+        return sidecar
+    return None
+
+
 def _file_info(path: Path, output_dir: Path) -> dict:
     """Build a metadata dict for a single file."""
     rel = path.relative_to(output_dir)
@@ -124,15 +149,20 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     mtime = stat.st_mtime
     if math.isnan(mtime) or math.isinf(mtime):
         mtime = 0.0
-    return {
+    is_video = ext in VIDEO_EXTS
+    info = {
         "filename": path.name,
         "subfolder": str(rel.parent) if str(rel.parent) != "." else "",
         "relative_path": str(rel),
         "size": stat.st_size,
         "modified": mtime,
-        "type": "video" if ext in VIDEO_EXTS else "image",
+        "type": "video" if is_video else "image",
         "format": ext.lstrip(".").upper(),  # PNG, JPG, MP4, WEBM, etc.
     }
+    # Flag videos that have a sidecar thumbnail
+    if is_video and _get_video_sidecar(path):
+        info["has_sidecar"] = True
+    return info
 
 
 def _generate_image_thumbnail(src: Path, dst: Path, size: int) -> bool:
@@ -554,6 +584,9 @@ def setup_output_routes(routes):
         if user_dir.is_dir():
             for entry in user_dir.rglob("*"):
                 if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                    # Skip VHS-style sidecar PNGs (they belong to a video)
+                    if _is_video_sidecar(entry):
+                        continue
                     files.append(_file_info(entry, output_dir))
 
         # Also list root-level dirs so we can see what's in the output folder
@@ -680,10 +713,14 @@ def setup_output_routes(routes):
             if target_dir.is_dir():
                 for entry in target_dir.rglob("*"):
                     if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                        if _is_video_sidecar(entry):
+                            continue
                         files.append(_file_info(entry, output_dir))
         else:
             for entry in output_dir.rglob("*"):
                 if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+                    if _is_video_sidecar(entry):
+                        continue
                     files.append(_file_info(entry, output_dir))
 
         # Apply search filter
@@ -776,12 +813,14 @@ def setup_output_routes(routes):
                     count = sum(
                         1 for f in entry.rglob("*")
                         if f.is_file() and f.suffix.lower() in ALL_MEDIA_EXTS
+                        and not _is_video_sidecar(f)
                     )
                     result.append({"username": entry.name, "file_count": count})
 
             root_count = sum(
                 1 for f in output_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in ALL_MEDIA_EXTS
+                and not _is_video_sidecar(f)
             )
             if root_count:
                 result.insert(0, {"username": "(shared)", "file_count": root_count})
@@ -830,10 +869,14 @@ def setup_output_routes(routes):
                 "Cache-Control": "public, max-age=86400",
             })
 
-        # Generate
+        # Generate — prefer sidecar PNG for videos (faster, higher quality)
         success = False
         if ext in VIDEO_EXTS:
-            success = _generate_video_thumbnail(file_path, cache_path, size)
+            sidecar = _get_video_sidecar(file_path)
+            if sidecar:
+                success = _generate_image_thumbnail(sidecar, cache_path, size)
+            if not success:
+                success = _generate_video_thumbnail(file_path, cache_path, size)
         elif ext in IMAGE_EXTS:
             success = _generate_image_thumbnail(file_path, cache_path, size)
 
@@ -1117,6 +1160,17 @@ def setup_output_routes(routes):
         except OSError as e:
             return web.json_response({"error": str(e)}, status=500)
 
+        # Also delete VHS-style sidecar PNG if this was a video
+        if file_path.suffix.lower() in VIDEO_EXTS:
+            sidecar = file_path.with_suffix(".png")
+            if sidecar.exists() and sidecar.is_file():
+                try:
+                    sidecar_rel = str(sidecar.relative_to(output_dir.resolve()))
+                    sidecar.unlink()
+                    logger.info("User %s deleted video sidecar: %s", user["username"], sidecar)
+                except OSError:
+                    pass  # best-effort sidecar cleanup
+
         # Clean up DB records
         db = await get_db()
         await db.execute("DELETE FROM output_tags WHERE file_path = ?", (rel_path,))
@@ -1298,6 +1352,16 @@ def setup_output_routes(routes):
             except OSError as e:
                 errors.append(f"{filename}: {e}")
                 continue
+
+            # Also delete VHS-style sidecar PNG if this was a video
+            if file_path.suffix.lower() in VIDEO_EXTS:
+                sidecar = file_path.with_suffix(".png")
+                if sidecar.exists() and sidecar.is_file():
+                    try:
+                        sidecar.unlink()
+                        logger.info("User %s bulk-deleted video sidecar: %s", user["username"], sidecar)
+                    except OSError:
+                        pass  # best-effort sidecar cleanup
 
             # Clean up DB records
             await db.execute("DELETE FROM output_tags WHERE file_path = ?", (rel_path,))
