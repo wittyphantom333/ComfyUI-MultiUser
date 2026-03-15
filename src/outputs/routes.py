@@ -605,9 +605,10 @@ def setup_output_routes(routes):
             f["tags"] = tags_map.get(rp, [])
             f["rating"] = ratings_map.get(rp, 0)
 
-        # Apply tag filter
+        # Apply tag filter (case-insensitive comparison)
         if tag_filter:
-            files = [f for f in files if tag_filter in [t.lower() for t in f["tags"]]]
+            tag_filter_lower = tag_filter.lower()
+            files = [f for f in files if tag_filter_lower in [t.lower() for t in f["tags"]]]
 
         # Apply rating filter
         if min_rating > 0:
@@ -721,9 +722,10 @@ def setup_output_routes(routes):
             f["tags"] = tags_map.get(rp, [])
             f["rating"] = ratings_map.get(rp, 0)
 
-        # Apply tag filter
+        # Apply tag filter (case-insensitive comparison)
         if tag_filter:
-            files = [f for f in files if tag_filter in [t.lower() for t in f["tags"]]]
+            tag_filter_lower = tag_filter.lower()
+            files = [f for f in files if tag_filter_lower in [t.lower() for t in f["tags"]]]
 
         # Apply rating filter
         if min_rating > 0:
@@ -908,12 +910,16 @@ def setup_output_routes(routes):
 
         # Look up generation record from the database
         # (for execution_time_ms, and as workflow_json fallback)
+        # Scope by user_id and match by relative path (with filename fallback for legacy data)
         try:
+            user_id = user["id"]
             fname = file_path.name
+            rel_path_str = str(file_path.relative_to(output_dir.resolve()))
             rows = await db.fetchall(
                 "SELECT execution_time_ms, workflow_json, output_paths FROM generations "
-                "WHERE output_paths IS NOT NULL AND status = 'completed' "
-                "ORDER BY completed_at DESC"
+                "WHERE user_id = ? AND output_paths IS NOT NULL AND status = 'completed' "
+                "ORDER BY completed_at DESC",
+                (user_id,)
             )
             for row in rows:
                 op = row.get("output_paths") or row["output_paths"]
@@ -922,7 +928,9 @@ def setup_output_routes(routes):
                         paths_list = json.loads(op) if isinstance(op, str) else op
                     except (json.JSONDecodeError, TypeError):
                         continue
-                    if isinstance(paths_list, list) and fname in paths_list:
+                    if isinstance(paths_list, list) and (
+                        rel_path_str in paths_list or fname in paths_list
+                    ):
                         et = row.get("execution_time_ms")
                         if et is not None:
                             meta["execution_time_ms"] = et

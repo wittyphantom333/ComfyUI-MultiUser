@@ -188,16 +188,24 @@ def _hook_execution_events():
             elif event == "execution_success":
                 prompt_id = data.get("prompt_id")
                 if prompt_id:
-                    # Try to gather output images from the data
+                    # Try to gather output images/videos from the data
                     output_paths = None
                     outputs = data.get("output", {})
                     if outputs:
                         paths = []
                         for node_output in outputs.values():
-                            images = node_output.get("images", [])
-                            for img in images:
-                                if isinstance(img, dict) and "filename" in img:
-                                    paths.append(img["filename"])
+                            # Capture images and video/gif outputs
+                            for key in ("images", "gifs"):
+                                items = node_output.get(key, [])
+                                for item in items:
+                                    if isinstance(item, dict) and "filename" in item:
+                                        fname = item["filename"]
+                                        subfolder = item.get("subfolder", "")
+                                        # Store relative path (subfolder/filename) for unique identification
+                                        if subfolder:
+                                            paths.append(f"{subfolder}/{fname}")
+                                        else:
+                                            paths.append(fname)
                         output_paths = paths or None
                     _fire_and_forget(on_prompt_completed(prompt_id, output_paths))
 

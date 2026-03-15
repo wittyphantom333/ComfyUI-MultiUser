@@ -1,7 +1,7 @@
 """SQL schema and migrations for ComfyUI-MultiUser."""
 
 # Schema version - increment when adding migrations
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Base schema (version 1)
 SCHEMA_V1 = [
@@ -225,10 +225,11 @@ SCHEMA_V1 = [
     CREATE TABLE IF NOT EXISTS output_ratings (
         id INTEGER PRIMARY KEY {autoincrement},
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        file_path TEXT NOT NULL UNIQUE,
+        file_path TEXT NOT NULL,
         rating INTEGER NOT NULL DEFAULT 0 CHECK(rating >= 0 AND rating <= 5),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, file_path)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_output_ratings_user ON output_ratings(user_id)",
@@ -336,6 +337,31 @@ MIGRATIONS: dict[int, list[str]] = {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        "CREATE INDEX IF NOT EXISTS idx_output_ratings_user ON output_ratings(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_output_ratings_path ON output_ratings(file_path)",
+    ],
+    4: [
+        # Fix output_ratings: change UNIQUE(file_path) to UNIQUE(user_id, file_path)
+        # so each user can have their own rating for the same file path.
+        # SQLite does not support ALTER TABLE to change constraints, so we
+        # recreate the table.
+        """
+        CREATE TABLE IF NOT EXISTS output_ratings_new (
+            id INTEGER PRIMARY KEY {autoincrement},
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL,
+            rating INTEGER NOT NULL DEFAULT 0 CHECK(rating >= 0 AND rating <= 5),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, file_path)
+        )
+        """,
+        """
+        INSERT OR IGNORE INTO output_ratings_new (id, user_id, file_path, rating, created_at, updated_at)
+        SELECT id, user_id, file_path, rating, created_at, updated_at FROM output_ratings
+        """,
+        "DROP TABLE IF EXISTS output_ratings",
+        "ALTER TABLE output_ratings_new RENAME TO output_ratings",
         "CREATE INDEX IF NOT EXISTS idx_output_ratings_user ON output_ratings(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_output_ratings_path ON output_ratings(file_path)",
     ],
