@@ -326,7 +326,7 @@ function _viewUrl(f) {
   return `/view?${p}`;
 }
 function _thumbUrl(f) {
-  return `/multiuser/inputs/thumbnail?${new URLSearchParams({filename: f.filename, subfolder: f.subfolder||"", size:"256"})}`;
+  return `/multiuser/inputs/thumbnail?${new URLSearchParams({filename: f.filename, subfolder: f.subfolder||"", size:"256", t: String(Math.floor(f.modified||0))})}`;
 }
 function _bytes(b) { return b < 1024 ? b+" B" : b < 1048576 ? (b/1024).toFixed(1)+" KB" : (b/1048576).toFixed(1)+" MB"; }
 function _date(ts) { return new Date(ts*1000).toLocaleString(); }

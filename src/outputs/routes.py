@@ -100,6 +100,27 @@ def _resolve_file(output_dir: Path, filename: str, subfolder: str) -> Optional[P
     return file_path
 
 
+def _purge_thumb_cache(file_path: Path) -> None:
+    """Remove cached thumbnails for a given source file.
+
+    Called before unlinking, so we can still stat the file to compute
+    the exact cache keys.  Best-effort — silently ignores errors.
+    """
+    try:
+        cache_dir = _get_thumb_cache_dir()
+        if not cache_dir.exists():
+            return
+        stat = file_path.stat()
+        mtime = stat.st_mtime
+        for size in (64, 128, 256, 512):
+            cache_key = hashlib.md5(
+                f"{file_path}:{mtime}:{size}".encode()
+            ).hexdigest()
+            (cache_dir / f"{cache_key}.webp").unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _check_access(user: dict, file_path: Path, output_dir: Path, user_dirs: set) -> bool:
     """Return True if the user may access this file."""
     if user.get("is_admin"):
@@ -866,7 +887,7 @@ def setup_output_routes(routes):
         if cache_path.exists():
             return web.FileResponse(cache_path, headers={
                 "Content-Type": "image/webp",
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "public, max-age=31536000, immutable",
             })
 
         # Generate — prefer sidecar PNG for videos (faster, higher quality)
@@ -883,7 +904,7 @@ def setup_output_routes(routes):
         if success and cache_path.exists():
             return web.FileResponse(cache_path, headers={
                 "Content-Type": "image/webp",
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "public, max-age=31536000, immutable",
             })
 
         # Fallback
@@ -1155,6 +1176,8 @@ def setup_output_routes(routes):
 
         rel_path = str(file_path.relative_to(output_dir.resolve()))
         try:
+            # Purge thumbnail cache before unlinking
+            _purge_thumb_cache(file_path)
             file_path.unlink()
             logger.info("User %s deleted output: %s", user["username"], file_path)
         except OSError as e:
@@ -1346,6 +1369,7 @@ def setup_output_routes(routes):
 
             rel_path = str(file_path.relative_to(output_dir.resolve()))
             try:
+                _purge_thumb_cache(file_path)
                 file_path.unlink()
                 deleted += 1
                 logger.info("User %s bulk-deleted output: %s", user["username"], file_path)
