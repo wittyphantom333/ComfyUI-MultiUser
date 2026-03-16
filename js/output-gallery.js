@@ -586,6 +586,34 @@ function _renderFilters() {
 }
 
 /* ────────────────────────────────────────────────────────────────────
+   In-place item UI refresh (no full reload)
+   ──────────────────────────────────────────────────────────────────── */
+function _refreshItemUI(f) {
+  const grid = _el_?.querySelector("#mu-grid");
+  if (!grid) return;
+  const idx = _files.indexOf(f);
+  if (idx < 0) return;
+  const item = grid.children[idx];
+  if (!item) return;
+  // Update tag badge
+  item.querySelector(".mu-badge-tag")?.remove();
+  if (f.tags?.length) {
+    const b = _mk("div","mu-badge mu-badge-tag"); b.textContent = "⏵ "+f.tags.length;
+    item.insertBefore(b, item.querySelector(".mu-ov"));
+  }
+  // Update star badge
+  item.querySelector(".mu-item-stars")?.remove();
+  if (f.rating > 0) {
+    const st = _mk("div","mu-item-stars"); st.textContent = _stars(f.rating);
+    item.appendChild(st);
+  }
+}
+
+function _refreshAllItemsUI() {
+  for (const f of _files) _refreshItemUI(f);
+}
+
+/* ────────────────────────────────────────────────────────────────────
    Grid rendering
    ──────────────────────────────────────────────────────────────────── */
 function _renderGrid(grid) {
@@ -711,12 +739,12 @@ function _openCtx(e, f) {
     s.onclick = async () => {
       const nr = f.rating === i ? 0 : i;
       try { const r = await apiPut("/outputs/rating",{file_path:f.relative_path,rating:nr}); if(r.ok){f.rating=nr;} } catch{}
-      _closeCtx(); _load();
+      _closeCtx(); _refreshItemUI(f);
     };
     sr.appendChild(s);
   }
   m.appendChild(sr);
-  if (f.rating > 0) { _ctxItem(m, "Clear rating", async () => { try{await apiPut("/outputs/rating",{file_path:f.relative_path,rating:0});f.rating=0;}catch{}_closeCtx();_load(); }); }
+  if (f.rating > 0) { _ctxItem(m, "Clear rating", async () => { try{await apiPut("/outputs/rating",{file_path:f.relative_path,rating:0});f.rating=0;}catch{}_closeCtx();_refreshItemUI(f); }); }
 
   _ctxSep(m);
   _ctxItem(m, "Add tag…", () => { _closeCtx(); _promptTag(f); });
@@ -729,7 +757,7 @@ function _openCtx(e, f) {
         ev.stopPropagation();
         try {
           const r = await apiDelete(`/outputs/tags?${new URLSearchParams({file_path:f.relative_path,tag:t})}`);
-          if (r.ok) { f.tags = f.tags.filter(x=>x!==t); _loadTags(); _load(); _toast("Tag removed"); }
+          if (r.ok) { f.tags = f.tags.filter(x=>x!==t); _loadTags(); _refreshItemUI(f); _toast("Tag removed"); }
         } catch{}
         _closeCtx();
       };
@@ -877,7 +905,7 @@ async function _bulkRate(files, rating) {
     if (r.ok) {
       files.forEach(f => f.rating = rating);
       _toast(`Rated ${files.length} files`);
-      _selected.clear(); _load();
+      _selected.clear(); _refreshAllItemsUI(); _syncSelVisuals(); _renderSelBar();
     } else { const e = await r.json().catch(()=>({})); _toast(e.error||"Bulk rate failed","error"); }
   } catch(e) { _toast(e.message,"error"); }
 }
@@ -888,7 +916,11 @@ async function _bulkPromptTag(files) {
   try {
     const paths = files.map(f => f.relative_path);
     const r = await apiPost("/outputs/bulk/tags", {file_paths: paths, tags: [_titleCase(tag.trim())]});
-    if (r.ok) { _toast(`Tagged ${files.length} files`); _selected.clear(); _loadTags(); _load(); }
+    if (r.ok) {
+      const clean = _titleCase(tag.trim());
+      files.forEach(f => { if (!f.tags) f.tags = []; if (!f.tags.includes(clean)) f.tags.push(clean); });
+      _toast(`Tagged ${files.length} files`); _selected.clear(); _loadTags(); _refreshAllItemsUI(); _syncSelVisuals(); _renderSelBar();
+    }
     else { const e = await r.json().catch(()=>({})); _toast(e.error||"Bulk tag failed","error"); }
   } catch(e) { _toast(e.message,"error"); }
 }
@@ -899,7 +931,11 @@ async function _bulkPromptRemoveTag(files, allTags) {
   try {
     const paths = files.map(f => f.relative_path);
     const r = await apiPost("/outputs/bulk/tags/remove", {file_paths: paths, tag: _titleCase(tag.trim())});
-    if (r.ok) { _toast(`Removed tag from files`); _selected.clear(); _loadTags(); _load(); }
+    if (r.ok) {
+      const clean = _titleCase(tag.trim());
+      files.forEach(f => { if (f.tags) f.tags = f.tags.filter(x => x !== clean); });
+      _toast(`Removed tag from files`); _selected.clear(); _loadTags(); _refreshAllItemsUI(); _syncSelVisuals(); _renderSelBar();
+    }
     else { const e = await r.json().catch(()=>({})); _toast(e.error||"Remove tag failed","error"); }
   } catch(e) { _toast(e.message,"error"); }
 }
@@ -923,8 +959,9 @@ async function _bulkDelete(files) {
 function _promptTag(f) {
   const tag = prompt("Enter tag name:");
   if (!tag?.trim()) return;
-  apiPost("/outputs/tags", {file_path: f.relative_path, tags: [_titleCase(tag.trim())]})
-    .then(r => { if (r.ok) { _loadTags(); _load(); _toast("Tag added"); } })
+  const clean = _titleCase(tag.trim());
+  apiPost("/outputs/tags", {file_path: f.relative_path, tags: [clean]})
+    .then(r => { if (r.ok) { if (!f.tags) f.tags = []; if (!f.tags.includes(clean)) f.tags.push(clean); _loadTags(); _refreshItemUI(f); _toast("Tag added"); } })
     .catch(() => {});
 }
 
