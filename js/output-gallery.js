@@ -164,6 +164,16 @@ const CSS = `
 }
 .mu-ctx-item:hover{background:#236692;color:#fff}
 .mu-ctx-sep{height:1px;background:var(--border-color,#4e4e4e);margin:3px 8px}
+.mu-ctx-tags{display:flex;flex-wrap:wrap;gap:4px;padding:5px 14px;align-items:center}
+.mu-ctx-tag{
+  display:inline-flex;align-items:center;gap:3px;
+  background:#293742;color:#5ba3d9;padding:2px 6px;border-radius:3px;font-size:10px;
+}
+.mu-ctx-tag-rm{
+  background:none;border:none;color:#ef5350;cursor:pointer;font-size:12px;
+  padding:0 1px;line-height:1;
+}
+.mu-ctx-tag-rm:hover{color:#ff1744}
 .mu-ctx-stars{
   display:flex;gap:3px;padding:5px 14px;align-items:center;
 }
@@ -711,7 +721,22 @@ function _openCtx(e, f) {
   _ctxSep(m);
   _ctxItem(m, "Add tag…", () => { _closeCtx(); _promptTag(f); });
   if (f.tags?.length) {
-    _ctxItem(m, `Tags: ${f.tags.join(", ")}`, null);
+    const tagRow = _mk("div","mu-ctx-tags");
+    for (const t of f.tags) {
+      const chip = _mk("span","mu-ctx-tag"); chip.textContent = t;
+      const rm = _mk("button","mu-ctx-tag-rm"); rm.textContent = "×";
+      rm.onclick = async (ev) => {
+        ev.stopPropagation();
+        try {
+          const r = await apiDelete(`/outputs/tags?${new URLSearchParams({file_path:f.relative_path,tag:t})}`);
+          if (r.ok) { f.tags = f.tags.filter(x=>x!==t); _loadTags(); _load(); _toast("Tag removed"); }
+        } catch{}
+        _closeCtx();
+      };
+      chip.appendChild(rm);
+      tagRow.appendChild(chip);
+    }
+    m.appendChild(tagRow);
   }
   _ctxSep(m);
   _ctxItem(m, "Gen Info", () => { _closeCtx(); _openLB(f); });
