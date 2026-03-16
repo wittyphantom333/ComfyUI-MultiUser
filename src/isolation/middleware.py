@@ -125,16 +125,20 @@ def install_isolation_middleware(app: web.Application) -> None:
         # ── 6. Per-user input uploads ──
         # Rewrite the subfolder in upload requests so files land in
         # input/{username}/{original_subfolder}/ instead of input/.
+        # This applies to ALL users including admins — everyone gets their
+        # own input subfolder.  Admins get extra *visibility* (can browse
+        # all users' inputs), but their own uploads still go to their folder.
         if (
             request.method == "POST"
             and request.path in _UPLOAD_PATHS
             and user
-            and not user.get("is_admin")
             and _is_enabled("per_user_inputs")
         ):
             return await _rewrite_upload(request, handler, user)
 
         # ── 7. Filter /object_info — restrict input file lists per user ──
+        # Admins also need this so their own subfolder files appear in
+        # node dropdowns (ComfyUI only lists root-level files by default).
         if (
             request.method == "GET"
             and any(
@@ -142,7 +146,6 @@ def install_isolation_middleware(app: web.Application) -> None:
                 for p in _OBJECT_INFO_PATHS
             )
             and user
-            and not user.get("is_admin")
             and _is_enabled("per_user_inputs")
         ):
             return await _filter_object_info(request, handler, user)
@@ -264,13 +267,13 @@ async def _rewrite_upload(
 async def _filter_object_info(
     request: web.Request, handler, user: dict
 ) -> web.Response:
-    """Filter ``/object_info`` so node dropdowns only list the user's input files.
+    """Filter ``/object_info`` so node dropdowns list the correct input files.
 
-    For every node input that includes ``"image_upload": true``, replace the
-    file list with entries from ``input/{username}/`` only.  The file names
-    are returned as ``{username}/file.png`` so that ComfyUI's path resolution
-    (``folder_paths.get_annotated_filepath``) resolves them correctly inside
-    the input directory.
+    For non-admins: only show files from ``input/{username}/`` + shared files.
+    For admins: show ALL files across all user directories + shared files.
+
+    File names are returned as ``{username}/file.png`` (or just ``file.png``
+    for root-level) so that ComfyUI's path resolution resolves them correctly.
     """
     import folder_paths
 
@@ -291,45 +294,52 @@ async def _filter_object_info(
         return response
 
     username = user["username"]
+    is_admin = bool(user.get("is_admin"))
     input_dir = folder_paths.get_input_directory()
     user_dir = os.path.join(input_dir, username)
 
-    # Build the authoritative list of this user's input files (relative paths
-    # prefixed with username/).
-    user_files: list[str] = []
-    if os.path.isdir(user_dir):
-        for dirpath, _subdirs, filenames in os.walk(user_dir):
-            for fname in filenames:
-                abs_path = os.path.join(dirpath, fname)
-                rel = os.path.relpath(abs_path, input_dir)
-                user_files.append(rel)
-
-    # Include files in the root input/ dir that are NOT inside any other
-    # user's subfolder (shared assets, legacy files, etc.).
     from ..db.factory import get_db
     db = await get_db()
     all_users_rows = await db.fetchall("SELECT username FROM users")
     all_usernames = {r["username"] for r in all_users_rows}
 
-    try:
-        root_entries = os.listdir(input_dir)
-    except OSError:
-        root_entries = []
+    # Build the authoritative file list
+    visible_files: list[str] = []
 
-    for entry in root_entries:
-        full = os.path.join(input_dir, entry)
-        if os.path.isfile(full):
-            # Root-level file — shared with everyone
-            user_files.append(entry)
-        elif os.path.isdir(full) and entry not in all_usernames:
-            # Directory that is NOT a user folder — shared assets
-            for dirpath, _subdirs, filenames in os.walk(full):
+    if is_admin:
+        # Admins see ALL files in the input directory
+        for dirpath, _subdirs, filenames in os.walk(input_dir):
+            for fname in filenames:
+                abs_path = os.path.join(dirpath, fname)
+                rel = os.path.relpath(abs_path, input_dir)
+                visible_files.append(rel)
+    else:
+        # Non-admins: own files + shared
+        if os.path.isdir(user_dir):
+            for dirpath, _subdirs, filenames in os.walk(user_dir):
                 for fname in filenames:
                     abs_path = os.path.join(dirpath, fname)
                     rel = os.path.relpath(abs_path, input_dir)
-                    user_files.append(rel)
+                    visible_files.append(rel)
 
-    user_files_set = set(user_files)
+        # Include shared files (root-level + non-user directories)
+        try:
+            root_entries = os.listdir(input_dir)
+        except OSError:
+            root_entries = []
+
+        for entry in root_entries:
+            full = os.path.join(input_dir, entry)
+            if os.path.isfile(full):
+                visible_files.append(entry)
+            elif os.path.isdir(full) and entry not in all_usernames:
+                for dirpath, _subdirs, filenames in os.walk(full):
+                    for fname in filenames:
+                        abs_path = os.path.join(dirpath, fname)
+                        rel = os.path.relpath(abs_path, input_dir)
+                        visible_files.append(rel)
+
+    visible_files_set = set(visible_files)
 
     # Walk every node definition and filter inputs marked with image_upload
     modified = False
@@ -362,14 +372,14 @@ async def _filter_object_info(
                 if image_folder != "input":
                     continue
 
-                # Filter the file list: keep files this user owns + shared
-                filtered = [f for f in file_list if f in user_files_set]
+                # Filter the file list: keep files this user can see
+                filtered = [f for f in file_list if f in visible_files_set]
 
-                # Also add user's own files that may be absent from the
-                # original list (LoadImage only does os.listdir on root).
-                for uf in user_files:
-                    if uf not in filtered:
-                        filtered.append(uf)
+                # Also add files that may be absent from the original list
+                # (LoadImage only does os.listdir on root).
+                for vf in visible_files:
+                    if vf not in filtered:
+                        filtered.append(vf)
 
                 # Apply content-type filtering like the original node does
                 try:
