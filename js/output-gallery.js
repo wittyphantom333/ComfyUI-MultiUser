@@ -407,7 +407,6 @@ let _minR = 0;         // min rating
 let _files = [];
 let _total = 0;
 let _pages = 0;
-let _collisionSet = new Set(); // filenames appearing in multiple subfolders
 let _admin = false;
 let _tags = [];        // user's known tags
 let _debounce = null;
@@ -497,26 +496,6 @@ function _bytes(b) { return b < 1024 ? b+" B" : b < 1048576 ? (b/1024).toFixed(1
 function _date(ts) { return new Date(ts*1000).toLocaleString(); }
 function _esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
-/**
- * Compute filename collisions (Majoor-style).
- * Returns a Set of lowercased filenames that appear in more than one subfolder.
- */
-function _computeCollisions(files) {
-  const fnMap = new Map(); // filename_lower -> Set of subfolders
-  for (const f of files) {
-    const key = (f.filename || "").toLowerCase();
-    if (!key) continue;
-    let subs = fnMap.get(key);
-    if (!subs) { subs = new Set(); fnMap.set(key, subs); }
-    subs.add(f.subfolder || "");
-  }
-  const coll = new Set();
-  for (const [key, subs] of fnMap) {
-    if (subs.size > 1) coll.add(key);
-  }
-  return coll;
-}
-
 /* ────────────────────────────────────────────────────────────────────
    Data loading
    ──────────────────────────────────────────────────────────────────── */
@@ -535,8 +514,6 @@ async function _load() {
     if (!r.ok) { const e = await r.json().catch(()=>({})); grid.innerHTML = `<div class="mu-empty">${e.error||"Failed to load"}</div>`; return; }
     const d = await r.json();
     _files = d.files||[]; _total = d.total||0; _pages = d.pages||0;
-    // Compute filename collisions (Majoor-style: same filename in different subfolders)
-    _collisionSet = _computeCollisions(_files);
     _renderGrid(grid);
     _renderPag();
   } catch(e) { grid.innerHTML = `<div class="mu-empty">${e.message}</div>`; }
@@ -633,14 +610,15 @@ function _renderGrid(grid) {
     img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // format badge (PNG, MP4, JPG, etc.) with collision "+" indicator
+    // format badge (PNG, MP4, JPG, etc.) with "+" for high-res (>= 1024x720)
     {
       const fmt = f.format || f.filename.split(".").pop().toUpperCase();
-      const hasCollision = _collisionSet.has(f.filename.toLowerCase());
-      const b = _mk("div","mu-badge mu-badge-fmt" + (hasCollision ? " collision" : ""));
+      const isHiRes = (f.width >= 1024 && f.height >= 720) || (f.width >= 720 && f.height >= 1024);
+      const b = _mk("div","mu-badge mu-badge-fmt" + (isHiRes ? " collision" : ""));
       b.setAttribute("data-fmt", fmt);
-      b.textContent = fmt + (hasCollision ? "+" : "");
-      if (hasCollision) b.title = "Name collision: same filename in different subfolders";
+      b.textContent = fmt + (isHiRes ? "+" : "");
+      if (isHiRes) b.title = `High resolution: ${f.width}×${f.height}`;
+      else if (f.width && f.height) b.title = `${f.width}×${f.height}`;
       item.appendChild(b);
     }
     // tag count badge

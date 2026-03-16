@@ -162,6 +162,39 @@ def _get_video_sidecar(video_path: Path) -> Optional[Path]:
     return None
 
 
+def _get_dimensions(path: Path) -> Optional[tuple[int, int]]:
+    """Get (width, height) for an image or video.  Returns None on failure.
+
+    For images, PIL reads only the file header — very fast, no pixel decode.
+    For videos, tries ffprobe (quick metadata read).
+    """
+    ext = path.suffix.lower()
+    if ext in IMAGE_EXTS and _HAS_PIL:
+        try:
+            with Image.open(path) as img:
+                return img.size  # (width, height)
+        except Exception:
+            return None
+    if ext in VIDEO_EXTS and _HAS_FFMPEG:
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height",
+                    "-of", "csv=p=0:s=x",
+                    str(path),
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and "x" in result.stdout:
+                parts = result.stdout.strip().split("x")
+                return (int(parts[0]), int(parts[1]))
+        except Exception:
+            return None
+    return None
+
+
 def _file_info(path: Path, output_dir: Path) -> dict:
     """Build a metadata dict for a single file."""
     rel = path.relative_to(output_dir)
@@ -183,6 +216,11 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     # Flag videos that have a sidecar thumbnail
     if is_video and _get_video_sidecar(path):
         info["has_sidecar"] = True
+    # Include dimensions for resolution badge
+    dims = _get_dimensions(path)
+    if dims:
+        info["width"] = dims[0]
+        info["height"] = dims[1]
     return info
 
 
