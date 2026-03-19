@@ -91,7 +91,33 @@ def install_isolation_middleware(app: web.Application) -> None:
                 )
             return await _filter_history(request, handler, user)
 
-        # ── 3. Restrict /view to user's own output subfolder ──
+        # ── 3. Fix /view when filename contains embedded path ──
+        # The new ComfyUI Vue frontend sends /view?filename=subfolder/file.png
+        # without a separate subfolder param.  ComfyUI's /view handler calls
+        # os.path.basename(filename), losing the subfolder.  We split the path
+        # and clone the request with proper subfolder + bare filename so the
+        # file actually resolves.  This must run for ALL users (admins too).
+        if (
+            request.path in _VIEW_PATHS
+            and request.method == "GET"
+        ):
+            raw_filename = request.query.get("filename", "")
+            explicit_subfolder = request.query.get("subfolder", "")
+
+            if "/" in raw_filename and not explicit_subfolder:
+                # Split "dir/subdir/file.png" → subfolder="dir/subdir", filename="file.png"
+                idx = raw_filename.rfind("/")
+                new_subfolder = raw_filename[:idx]
+                new_filename = raw_filename[idx + 1:]
+
+                from yarl import URL
+                new_query = dict(request.query)
+                new_query["filename"] = new_filename
+                new_query["subfolder"] = new_subfolder
+                cloned_url = URL(request.path).with_query(new_query)
+                request = request.clone(rel_url=cloned_url)
+
+        # ── 3b. Restrict /view to user's own output subfolder ──
         if (
             request.path in _VIEW_PATHS
             and request.method == "GET"
