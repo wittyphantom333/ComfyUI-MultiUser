@@ -21,7 +21,7 @@ from .src.generations.routes import setup_generation_routes
 from .src.workflows.routes import setup_workflow_routes
 from .src.outputs.routes import setup_output_routes
 from .src.inputs.routes import setup_input_routes
-from .src.isolation.middleware import install_isolation_middleware
+from .src.isolation.middleware import install_isolation_middleware, install_internal_files_middleware
 from .src.generations.tracker import (
     on_prompt_queued,
     on_prompt_started,
@@ -94,6 +94,7 @@ logger.info("MultiUser: all API routes registered")
 
 install_middleware(prompt_server.app)
 install_isolation_middleware(prompt_server.app)
+install_internal_files_middleware(prompt_server)
 
 # ---------------------------------------------------------------------------
 # on_prompt_handler: per-user output directories (PRIMARY mechanism)

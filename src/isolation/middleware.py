@@ -27,6 +27,7 @@ _QUEUE_PATHS = ("/queue", "/queue/", "/api/queue", "/api/queue/")
 _INTERRUPT_PATHS = ("/interrupt", "/interrupt/", "/api/interrupt", "/api/interrupt/")
 _UPLOAD_PATHS = ("/upload/image", "/api/upload/image")
 _OBJECT_INFO_PATHS = ("/object_info", "/object_info/", "/api/object_info", "/api/object_info/")
+_INTERNAL_FILES_PATHS = ("/internal/files/input", "/internal/files/output")
 
 
 def _is_enabled(key: str) -> bool:
@@ -136,7 +137,19 @@ def install_isolation_middleware(app: web.Application) -> None:
         ):
             return await _rewrite_upload(request, handler, user)
 
-        # ── 7. Filter /object_info — restrict input file lists per user ──
+        # ── 7. Filter /internal/files/{input,output} — ComfyUI's internal file API ──
+        # Modern ComfyUI uses /internal/files/input to populate node dropdowns
+        # (e.g. LoadImage).  This is a sub-app, so we intercept before it
+        # reaches the sub-app router and return our filtered list directly.
+        if (
+            request.method == "GET"
+            and request.path in _INTERNAL_FILES_PATHS
+            and user
+            and _is_enabled("per_user_inputs")
+        ):
+            return await _filter_internal_files(request, user)
+
+        # ── 8. Filter /object_info — restrict input file lists per user ──
         # Admins also need this so their own subfolder files appear in
         # node dropdowns (ComfyUI only lists root-level files by default).
         if (
@@ -258,6 +271,93 @@ async def _rewrite_upload(
         "subfolder": subfolder,
         "type": image_upload_type,
     })
+
+
+# ---------------------------------------------------------------------------
+#  /internal/files/{input,output} — filter ComfyUI's internal file API
+# ---------------------------------------------------------------------------
+
+async def _filter_internal_files(
+    request: web.Request, user: dict
+) -> web.Response:
+    """Intercept ComfyUI's ``/internal/files/input`` and ``/internal/files/output``
+    endpoints to enforce per-user file isolation.
+
+    The original endpoint returns a flat JSON array of root-level filenames.
+    We replace it with user-scoped relative paths so the node dropdown shows
+    only the user's own files (plus shared assets).
+    """
+    import folder_paths
+
+    directory_type = request.path.rsplit("/", 1)[-1]  # "input" or "output"
+
+    if directory_type == "input":
+        base_dir = folder_paths.get_input_directory()
+    elif directory_type == "output":
+        try:
+            base_dir = folder_paths.get_output_directory()
+        except (AttributeError, Exception):
+            base_dir = os.path.join(os.getcwd(), "output")
+    else:
+        return web.json_response({"error": "Invalid directory type"}, status=400)
+
+    username = user["username"]
+    is_admin = bool(user.get("is_admin"))
+
+    from ..db.factory import get_db
+    db = await get_db()
+    all_users_rows = await db.fetchall("SELECT username FROM users")
+    all_usernames = {r["username"] for r in all_users_rows}
+
+    visible_files: list[str] = []
+
+    if is_admin:
+        # Admins see ALL files
+        for dirpath, _subdirs, filenames in os.walk(base_dir):
+            for fname in filenames:
+                if fname.startswith("."):
+                    continue
+                abs_path = os.path.join(dirpath, fname)
+                rel = os.path.relpath(abs_path, base_dir)
+                visible_files.append(rel)
+    else:
+        # Non-admins: own subfolder + shared (root-level + non-user dirs)
+        user_dir = os.path.join(base_dir, username)
+        if os.path.isdir(user_dir):
+            for dirpath, _subdirs, filenames in os.walk(user_dir):
+                for fname in filenames:
+                    if fname.startswith("."):
+                        continue
+                    abs_path = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(abs_path, base_dir)
+                    visible_files.append(rel)
+
+        # Shared files: root-level files + non-user directories
+        try:
+            root_entries = os.listdir(base_dir)
+        except OSError:
+            root_entries = []
+
+        for entry in root_entries:
+            full = os.path.join(base_dir, entry)
+            if entry.startswith("."):
+                continue
+            if os.path.isfile(full):
+                visible_files.append(entry)
+            elif os.path.isdir(full) and entry not in all_usernames:
+                for dirpath, _subdirs, filenames in os.walk(full):
+                    for fname in filenames:
+                        if fname.startswith("."):
+                            continue
+                        abs_path = os.path.join(dirpath, fname)
+                        rel = os.path.relpath(abs_path, base_dir)
+                        visible_files.append(rel)
+
+    # Sort by filename (matching ComfyUI's original behavior for input,
+    # or reverse mtime for output — but we don't have mtime readily, so sort alpha)
+    visible_files.sort()
+
+    return web.json_response(visible_files)
 
 
 # ---------------------------------------------------------------------------
@@ -697,3 +797,59 @@ async def _filter_interrupt(
                         )
 
     return await handler(request)
+
+
+# ---------------------------------------------------------------------------
+#  Internal sub-app middleware — /internal/files/{input,output}
+# ---------------------------------------------------------------------------
+
+def install_internal_files_middleware(prompt_server_instance) -> None:
+    """Install a middleware on ComfyUI's internal sub-app for file isolation.
+
+    ComfyUI's ``/internal`` routes live in a separate ``web.Application``
+    registered via ``add_subapp``.  Depending on the aiohttp version the
+    parent app's middleware chain may or may not wrap sub-app requests.
+    Installing middleware *directly* on the sub-app guarantees that
+    ``/internal/files/input`` (used by the new React frontend to populate
+    node dropdowns like LoadImage) is always filtered.
+    """
+    try:
+        internal_app = prompt_server_instance.internal_routes.get_app()
+    except AttributeError:
+        logger.warning(
+            "Could not access internal_routes on PromptServer; "
+            "/internal/files filtering will rely on parent middleware only"
+        )
+        return
+
+    @web.middleware
+    async def _internal_files_filter(request: web.Request, handler):
+        # Only act on GET requests to /files/{type}
+        if request.method != "GET" or "/files/" not in request.path:
+            return await handler(request)
+
+        # Extract directory type from the last path segment.
+        # request.path may be "/internal/files/input" (if parent middleware
+        # cloned the request) or "/files/input" (sub-app relative).
+        directory_type = request.path.rsplit("/", 1)[-1]
+        if directory_type not in ("input", "output"):
+            return await handler(request)
+
+        if not _is_enabled("per_user_inputs"):
+            return await handler(request)
+
+        # Prefer user set by parent auth middleware; fall back to our own
+        # auth check in case parent middleware did not run for sub-apps.
+        user = request.get("multiuser_user")
+        if user is None:
+            from ..auth.middleware import _try_identify_user
+            user = await _try_identify_user(request, quiet=True)
+
+        if user is None:
+            # Anonymous / unauthenticated — let default handler run
+            return await handler(request)
+
+        return await _filter_internal_files(request, user)
+
+    internal_app.middlewares.insert(0, _internal_files_filter)
+    logger.info("Internal files isolation middleware installed on sub-app")
