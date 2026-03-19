@@ -195,6 +195,27 @@ def _get_dimensions(path: Path) -> Optional[tuple[int, int]]:
     return None
 
 
+def _get_video_duration(path: Path) -> Optional[float]:
+    """Get duration in seconds for a video file.  Returns None on failure."""
+    if not _HAS_FFMPEG:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def _file_info(path: Path, output_dir: Path) -> dict:
     """Build a metadata dict for a single file."""
     rel = path.relative_to(output_dir)
@@ -221,6 +242,11 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     if dims:
         info["width"] = dims[0]
         info["height"] = dims[1]
+    # Include duration for video files
+    if is_video:
+        dur = _get_video_duration(path)
+        if dur is not None:
+            info["duration"] = round(dur, 2)
     return info
 
 

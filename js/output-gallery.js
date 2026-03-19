@@ -646,7 +646,14 @@ function _renderGrid(grid) {
     }
     // hover overlay
     const ov = _mk("div","mu-ov");
-    const nm = _mk("span","mu-ov-name"); nm.textContent = f.filename;
+    const nm = _mk("span","mu-ov-name");
+    if (f.type === "video" && f.duration != null) {
+      const d = f.duration;
+      const m = Math.floor(d / 60), s = Math.floor(d % 60);
+      nm.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+    } else {
+      nm.textContent = f.filename;
+    }
     ov.appendChild(nm);
     item.appendChild(ov);
 
