@@ -151,10 +151,10 @@ const CSS = `
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
 .mu-badge-hd{
   top:4px;right:4px;margin-right:0;
-  background:linear-gradient(135deg,rgba(156,39,176,.2),rgba(103,58,183,.2));
-  border:1px solid rgba(186,104,200,.5);
-  color:#ce93d8;font-size:7px;font-weight:800;letter-spacing:.6px;
-  text-shadow:0 0 6px rgba(186,104,200,.5);
+  background:rgba(128,0,255,.85);
+  border:1px solid rgba(180,100,255,.6);
+  color:#fff;font-size:7px;font-weight:800;letter-spacing:.6px;
+  text-shadow:0 1px 2px rgba(0,0,0,.7);
 }
 
 /* === Context menu === */
