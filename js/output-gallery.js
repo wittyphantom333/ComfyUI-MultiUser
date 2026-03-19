@@ -149,6 +149,13 @@ const CSS = `
 .mu-badge-fmt.collision[data-fmt="BMP"]{color:#e0e0e0;border-color:rgba(224,224,224,.6)}
 .mu-badge-fmt.collision[data-fmt="TIFF"]{color:#d7ccc8;border-color:rgba(215,204,200,.6)}
 .mu-badge-tag{top:4px;left:4px;color:#5ba3d9;background:rgba(0,0,0,.7);border:1px solid rgba(91,163,217,.25)}
+.mu-badge-hd{
+  top:4px;right:4px;margin-right:0;
+  background:linear-gradient(135deg,rgba(255,215,0,.15),rgba(255,170,0,.15));
+  border:1px solid rgba(255,215,0,.45);
+  color:#ffd740;font-size:7px;font-weight:800;letter-spacing:.6px;
+  text-shadow:0 0 6px rgba(255,215,0,.5);
+}
 
 /* === Context menu === */
 .mu-ctx{
@@ -610,16 +617,24 @@ function _renderGrid(grid) {
     img.onerror = () => { if (f.type === "image") img.src = _viewUrl(f); };
     item.appendChild(img);
 
-    // format badge (PNG, MP4, JPG, etc.) with "+" for high-res (>= 1024x720)
+    // format badge (PNG, MP4, JPG, etc.) with "+" for high-res, "HD" for >= 2048
     {
       const fmt = f.format || f.filename.split(".").pop().toUpperCase();
       const isHiRes = (f.width >= 1024 && f.height >= 720) || (f.width >= 720 && f.height >= 1024);
+      const isHD = f.width >= 2048 || f.height >= 2048;
       const b = _mk("div","mu-badge mu-badge-fmt" + (isHiRes ? " collision" : ""));
       b.setAttribute("data-fmt", fmt);
       b.textContent = fmt + (isHiRes ? "+" : "");
       if (isHiRes) b.title = `High resolution: ${f.width}×${f.height}`;
       else if (f.width && f.height) b.title = `${f.width}×${f.height}`;
+      if (isHD) b.style.right = "28px"; // shift left to make room for HD badge
       item.appendChild(b);
+      if (isHD) {
+        const hd = _mk("div","mu-badge mu-badge-hd");
+        hd.textContent = "HD";
+        hd.title = `${f.width}×${f.height}`;
+        item.appendChild(hd);
+      }
     }
     // tag count badge
     if (f.tags?.length) {
