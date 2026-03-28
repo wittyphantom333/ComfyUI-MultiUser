@@ -103,6 +103,7 @@ def install_isolation_middleware(app: web.Application) -> None:
         ):
             raw_filename = request.query.get("filename", "")
             explicit_subfolder = request.query.get("subfolder", "")
+            view_type = request.query.get("type", "output")
 
             if "/" in raw_filename and not explicit_subfolder:
                 # Split "dir/subdir/file.png" → subfolder="dir/subdir", filename="file.png"
@@ -116,6 +117,11 @@ def install_isolation_middleware(app: web.Application) -> None:
                 new_query["subfolder"] = new_subfolder
                 cloned_url = URL(request.path).with_query(new_query)
                 request = request.clone(rel_url=cloned_url)
+                print(f"[MULTIUSER] /view path split: {raw_filename} → "
+                      f"subfolder={new_subfolder}, filename={new_filename}, type={view_type}")
+            elif view_type == "input":
+                print(f"[MULTIUSER] /view input (no split needed): filename={raw_filename}, "
+                      f"subfolder={explicit_subfolder}")
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
