@@ -173,6 +173,7 @@ def install_isolation_middleware(app: web.Application) -> None:
             and user
             and _is_enabled("per_user_inputs")
         ):
+            print(f"[MULTIUSER] Intercepting {request.path} for user={user['username']} (parent middleware)")
             return await _filter_internal_files(request, user)
 
         # ── 8. Filter /object_info — restrict input file lists per user ──
@@ -187,6 +188,7 @@ def install_isolation_middleware(app: web.Application) -> None:
             and user
             and _is_enabled("per_user_inputs")
         ):
+            print(f"[MULTIUSER] Intercepting {request.path} for user={user['username']}")
             return await _filter_object_info(request, handler, user)
 
         return await handler(request)
@@ -390,6 +392,130 @@ async def _filter_internal_files(
 #  /object_info — filter input file lists to the current user
 # ---------------------------------------------------------------------------
 
+
+async def _get_all_usernames() -> set[str]:
+    """Return the set of all known usernames from the DB."""
+    try:
+        from ..db.factory import get_db
+        db = await get_db()
+        rows = await db.fetchall("SELECT username FROM users")
+        return {r["username"] for r in rows}
+    except Exception as exc:
+        print(f"[MULTIUSER] WARN: could not fetch usernames: {exc}")
+        return set()
+
+
+def _extract_response_json(response: web.Response):
+    """Best-effort extraction of JSON data from an aiohttp response.
+
+    Tries multiple methods to handle different aiohttp versions.
+    Returns the parsed dict or None.
+    """
+    import gzip as _gzip
+
+    # Method 1: response.body (standard for web.Response / json_response)
+    try:
+        body = response.body
+        if isinstance(body, bytes) and body:
+            # Could be gzip-compressed if compress_body ran inline
+            if body[:2] == b'\x1f\x8b':
+                body = _gzip.decompress(body)
+            return json_mod.loads(body)
+        if isinstance(body, (bytearray, memoryview)):
+            return json_mod.loads(bytes(body))
+    except Exception:
+        pass
+
+    # Method 2: response.text (aiohttp decodes body via charset)
+    try:
+        text = response.text
+        if text:
+            return json_mod.loads(text)
+    except Exception:
+        pass
+
+    # Method 3: internal _body attribute
+    try:
+        raw = getattr(response, '_body', None)
+        if raw and isinstance(raw, bytes):
+            if raw[:2] == b'\x1f\x8b':
+                raw = _gzip.decompress(raw)
+            return json_mod.loads(raw)
+    except Exception:
+        pass
+
+    return None
+
+
+def _build_object_info_from_scratch() -> dict:
+    """Fallback: build /object_info data directly from node registrations.
+
+    Mirrors ComfyUI's ``node_info()`` in server.py.  Used when we cannot
+    parse the response body (e.g., different aiohttp version, compression, etc.).
+    """
+    import nodes
+    import folder_paths
+
+    try:
+        from comfy_api.internal import _ComfyNodeInternal
+    except ImportError:
+        _ComfyNodeInternal = None
+
+    out = {}
+    # Use folder_paths.cache_helper for performance (same as ComfyUI does)
+    try:
+        ctx = folder_paths.cache_helper
+    except AttributeError:
+        from contextlib import nullcontext
+        ctx = nullcontext()
+
+    with ctx:
+        for node_class_name in nodes.NODE_CLASS_MAPPINGS:
+            try:
+                obj_class = nodes.NODE_CLASS_MAPPINGS[node_class_name]
+                if _ComfyNodeInternal and issubclass(obj_class, _ComfyNodeInternal):
+                    out[node_class_name] = obj_class.GET_NODE_INFO_V1()
+                    continue
+
+                info = {}
+                info['input'] = obj_class.INPUT_TYPES()
+                info['input_order'] = {
+                    key: list(value.keys())
+                    for key, value in obj_class.INPUT_TYPES().items()
+                }
+                info['is_input_list'] = getattr(obj_class, "INPUT_IS_LIST", False)
+                info['output'] = obj_class.RETURN_TYPES
+                info['output_is_list'] = (
+                    obj_class.OUTPUT_IS_LIST
+                    if hasattr(obj_class, 'OUTPUT_IS_LIST')
+                    else [False] * len(obj_class.RETURN_TYPES)
+                )
+                info['output_name'] = (
+                    obj_class.RETURN_NAMES
+                    if hasattr(obj_class, 'RETURN_NAMES')
+                    else info['output']
+                )
+                info['name'] = node_class_name
+                info['display_name'] = (
+                    nodes.NODE_DISPLAY_NAME_MAPPINGS.get(node_class_name, node_class_name)
+                )
+                info['description'] = getattr(obj_class, 'DESCRIPTION', '')
+                info['python_module'] = getattr(obj_class, "RELATIVE_PYTHON_MODULE", "nodes")
+                info['category'] = getattr(obj_class, 'CATEGORY', 'sd')
+                info['output_node'] = bool(getattr(obj_class, 'OUTPUT_NODE', False))
+                if getattr(obj_class, "DEPRECATED", False):
+                    info['deprecated'] = True
+                if getattr(obj_class, "EXPERIMENTAL", False):
+                    info['experimental'] = True
+                if hasattr(obj_class, 'API_NODE'):
+                    info['api_node'] = obj_class.API_NODE
+                out[node_class_name] = info
+            except Exception:
+                pass
+
+    return out
+
+
 async def _filter_object_info(
     request: web.Request, handler, user: dict
 ) -> web.Response:
@@ -403,127 +529,169 @@ async def _filter_object_info(
     """
     import folder_paths
 
-    response = await handler(request)
-    if response.status != 200:
-        return response
-
-    try:
-        body = response.body
-        if isinstance(body, bytes):
-            data = json_mod.loads(body)
-        else:
-            data = {}
-    except Exception:
-        return response
-
-    if not isinstance(data, dict):
-        return response
-
     username = user["username"]
     is_admin = bool(user.get("is_admin"))
-    input_dir = folder_paths.get_input_directory()
-    user_dir = os.path.join(input_dir, username)
 
-    from ..db.factory import get_db
-    db = await get_db()
-    all_users_rows = await db.fetchall("SELECT username FROM users")
-    all_usernames = {r["username"] for r in all_users_rows}
+    # ── Step 1: Get the original /object_info response ──
+    try:
+        response = await handler(request)
+    except Exception as exc:
+        print(f"[MULTIUSER] ERROR: /object_info handler raised: {exc}")
+        return web.json_response({"error": "Internal error"}, status=500)
 
-    # Build the authoritative file list
-    visible_files: list[str] = []
+    if response.status != 200:
+        print(f"[MULTIUSER] /object_info returned status {response.status}, passing through")
+        return response
 
-    if is_admin:
-        # Admins see ALL files in the input directory
-        for dirpath, _subdirs, filenames in os.walk(input_dir):
-            for fname in filenames:
-                abs_path = os.path.join(dirpath, fname)
-                rel = os.path.relpath(abs_path, input_dir)
-                visible_files.append(rel)
-    else:
-        # Non-admins: own files + shared
-        if os.path.isdir(user_dir):
-            for dirpath, _subdirs, filenames in os.walk(user_dir):
+    # ── Step 2: Extract JSON from response ──
+    data = _extract_response_json(response)
+    built_from_scratch = False
+
+    if data is None or not isinstance(data, dict):
+        print(f"[MULTIUSER] WARN: Could not parse /object_info body "
+              f"(body type={type(getattr(response, 'body', None)).__name__}, "
+              f"body len={len(response.body) if isinstance(getattr(response, 'body', None), bytes) else '?'}). "
+              f"Rebuilding from scratch.")
+        data = _build_object_info_from_scratch()
+        built_from_scratch = True
+
+    if not data:
+        print("[MULTIUSER] WARN: /object_info data is empty, passing through")
+        return response
+
+    # ── Step 3: Build the visible file list for this user ──
+    try:
+        input_dir = folder_paths.get_input_directory()
+        user_dir = os.path.join(input_dir, username)
+        all_usernames = await _get_all_usernames()
+
+        visible_files: list[str] = []
+
+        if is_admin:
+            for dirpath, _subdirs, filenames in os.walk(input_dir):
                 for fname in filenames:
-                    abs_path = os.path.join(dirpath, fname)
-                    rel = os.path.relpath(abs_path, input_dir)
+                    if fname.startswith("."):
+                        continue
+                    rel = os.path.relpath(os.path.join(dirpath, fname), input_dir)
                     visible_files.append(rel)
-
-        # Include shared files (root-level + non-user directories)
-        try:
-            root_entries = os.listdir(input_dir)
-        except OSError:
-            root_entries = []
-
-        for entry in root_entries:
-            full = os.path.join(input_dir, entry)
-            if os.path.isfile(full):
-                visible_files.append(entry)
-            elif os.path.isdir(full) and entry not in all_usernames:
-                for dirpath, _subdirs, filenames in os.walk(full):
+        else:
+            # Own files
+            if os.path.isdir(user_dir):
+                for dirpath, _subdirs, filenames in os.walk(user_dir):
                     for fname in filenames:
-                        abs_path = os.path.join(dirpath, fname)
-                        rel = os.path.relpath(abs_path, input_dir)
+                        if fname.startswith("."):
+                            continue
+                        rel = os.path.relpath(os.path.join(dirpath, fname), input_dir)
                         visible_files.append(rel)
 
-    visible_files_set = set(visible_files)
+            # Shared: root-level files + non-user directories
+            try:
+                root_entries = os.listdir(input_dir)
+            except OSError:
+                root_entries = []
 
-    # Walk every node definition and filter inputs marked with image_upload
-    modified = False
-    for node_name, node_info in data.items():
-        if not isinstance(node_info, dict):
-            continue
-        input_defs = node_info.get("input")
-        if not isinstance(input_defs, dict):
-            continue
+            for entry in root_entries:
+                if entry.startswith("."):
+                    continue
+                full = os.path.join(input_dir, entry)
+                if os.path.isfile(full):
+                    visible_files.append(entry)
+                elif os.path.isdir(full) and entry not in all_usernames:
+                    for dirpath, _subdirs, filenames in os.walk(full):
+                        for fname in filenames:
+                            if fname.startswith("."):
+                                continue
+                            rel = os.path.relpath(
+                                os.path.join(dirpath, fname), input_dir
+                            )
+                            visible_files.append(rel)
 
-        for category in ("required", "optional"):
-            cat_inputs = input_defs.get(category)
-            if not isinstance(cat_inputs, dict):
+        visible_files_set = set(visible_files)
+    except Exception as exc:
+        print(f"[MULTIUSER] ERROR building visible file list: {exc}")
+        return response  # fallback: unfiltered
+
+    # ── Step 4: Walk every node definition and filter image_upload inputs ──
+    try:
+        modified = False
+        nodes_filtered = 0
+
+        for node_name, node_info_val in data.items():
+            if not isinstance(node_info_val, dict):
+                continue
+            input_defs = node_info_val.get("input")
+            if not isinstance(input_defs, dict):
                 continue
 
-            for input_name, input_spec in cat_inputs.items():
-                if not isinstance(input_spec, (list, tuple)) or len(input_spec) < 2:
+            for category in ("required", "optional"):
+                cat_inputs = input_defs.get(category)
+                if not isinstance(cat_inputs, dict):
                     continue
 
-                file_list, opts = input_spec[0], input_spec[1]
-                if not isinstance(opts, dict) or not opts.get("image_upload"):
-                    continue
+                for input_name, input_spec in list(cat_inputs.items()):
+                    if not isinstance(input_spec, (list, tuple)) or len(input_spec) < 2:
+                        continue
 
-                if not isinstance(file_list, list):
-                    continue
+                    file_list, opts = input_spec[0], input_spec[1]
 
-                # This input's image_folder determines which dir it lists from.
-                # Only filter "input"-folder lists; output/temp stay untouched.
-                image_folder = opts.get("image_folder", "input")
-                if image_folder != "input":
-                    continue
+                    if not isinstance(opts, dict) or not opts.get("image_upload"):
+                        continue
 
-                # Filter the file list: keep files this user can see
-                filtered = [f for f in file_list if f in visible_files_set]
+                    # V2 COMBO format: file_list is the string "COMBO",
+                    # not a list.  These use remote routes — skip them.
+                    if not isinstance(file_list, list):
+                        continue
 
-                # Also add files that may be absent from the original list
-                # (LoadImage only does os.listdir on root).
-                for vf in visible_files:
-                    if vf not in filtered:
-                        filtered.append(vf)
+                    # Only filter "input"-folder lists; output/temp stay
+                    # untouched.
+                    image_folder = opts.get("image_folder", "input")
+                    if image_folder != "input":
+                        continue
 
-                # Apply content-type filtering like the original node does
-                try:
-                    filtered = folder_paths.filter_files_content_types(
-                        filtered, ["image"]
-                    )
-                except Exception:
-                    pass
+                    # Replace the file list with only visible files
+                    filtered = [f for f in file_list if f in visible_files_set]
 
-                filtered.sort()
-                if isinstance(input_spec, tuple):
-                    cat_inputs[input_name] = (filtered, opts) + input_spec[2:]
-                else:
-                    cat_inputs[input_name] = [filtered, opts] + list(input_spec[2:])
-                modified = True
+                    # Add files that are absent from the original list
+                    # (LoadImage only does os.listdir on root; user files
+                    # in subdirectories won't be there).
+                    existing = set(filtered)
+                    for vf in visible_files:
+                        if vf not in existing:
+                            filtered.append(vf)
+                            existing.add(vf)
 
-    if modified:
-        return web.json_response(data)
+                    # Apply content-type filtering (e.g., keep only images)
+                    try:
+                        filtered = folder_paths.filter_files_content_types(
+                            filtered, ["image"]
+                        )
+                    except Exception:
+                        pass
+
+                    filtered.sort()
+
+                    # Replace in the data structure
+                    if isinstance(input_spec, tuple):
+                        cat_inputs[input_name] = (filtered, opts) + input_spec[2:]
+                    else:
+                        cat_inputs[input_name] = [filtered, opts] + list(input_spec[2:])
+
+                    modified = True
+                    nodes_filtered += 1
+
+        print(f"[MULTIUSER] /object_info filter: user={username}, "
+              f"visible_files={len(visible_files)}, "
+              f"nodes_filtered={nodes_filtered}, "
+              f"modified={modified}, "
+              f"from_scratch={built_from_scratch}")
+
+        if modified or built_from_scratch:
+            return web.json_response(data)
+
+    except Exception as exc:
+        print(f"[MULTIUSER] ERROR during /object_info filtering: {exc}")
+        import traceback
+        traceback.print_exc()
 
     return response
 
