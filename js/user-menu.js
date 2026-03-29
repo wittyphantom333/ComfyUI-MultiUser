@@ -352,6 +352,7 @@ async function _handleChangePassword() {
 async function _handleClearCache(actionItem) {
   const origText = actionItem.textContent;
   actionItem.textContent = "⏳ Clearing...";
+  const { showToast } = await import("./multiuser.js");
 
   try {
     let cleared = 0;
