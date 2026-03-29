@@ -99,6 +99,13 @@ def install_isolation_middleware(app: web.Application) -> None:
         # versions), we serve input files directly when the filename
         # contains a path separator.  This also handles path splitting
         # for flat filenames with an explicit subfolder.
+        #
+        # ComfyUI convention: filenames can end with " [output]",
+        # " [input]", or " [temp]" to indicate directory type.
+        # The widget dropdown's "All" tab mixes input + output history
+        # items.  When the frontend requests a thumbnail for an output
+        # history item it sends  filename="photo.jpg [output]"&type=input.
+        # We parse the suffix, strip it, and serve from the right dir.
         if (
             request.path in _VIEW_PATHS
             and request.method == "GET"
@@ -107,19 +114,21 @@ def install_isolation_middleware(app: web.Application) -> None:
             explicit_subfolder = request.query.get("subfolder", "")
             view_type = request.query.get("type", "output")
 
-            # Log ALL /view requests so we can trace what the frontend sends
-            if view_type == "input":
-                print(f"[MULTIUSER] /view REQUEST: path={request.path}, "
-                      f"filename={raw_filename!r}, subfolder={explicit_subfolder!r}, "
-                      f"type={view_type}, has_slash={'/' in raw_filename}")
+            # Parse ComfyUI's " [type]" suffix convention
+            actual_type = view_type
+            clean_filename = raw_filename
+            import re as _re
+            _type_suffix = _re.search(r'\s+\[(input|output|temp)\]\s*$', raw_filename)
+            if _type_suffix:
+                actual_type = _type_suffix.group(1)
+                clean_filename = raw_filename[:_type_suffix.start()]
 
-            if view_type == "input" and ("/" in raw_filename or explicit_subfolder):
-                return await _serve_input_file(request, raw_filename, explicit_subfolder)
+            if actual_type == "input" and clean_filename:
+                return await _serve_input_file(request, clean_filename, explicit_subfolder)
 
-            # Also serve root-level input files (no subfolder) directly
-            # to ensure consistent behavior
-            if view_type == "input" and raw_filename:
-                return await _serve_input_file(request, raw_filename, explicit_subfolder)
+            # " [output]" or " [temp]" suffix → serve from output/temp dir
+            if actual_type in ("output", "temp") and clean_filename:
+                return await _serve_output_file(request, clean_filename, actual_type, explicit_subfolder)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
@@ -449,6 +458,132 @@ async def _serve_input_file(
 
     except Exception as exc:
         print(f"[MULTIUSER] _serve_input_file: EXCEPTION: {exc}")
+        import traceback
+        traceback.print_exc()
+        return web.Response(status=500)
+
+
+# ---------------------------------------------------------------------------
+#  /view — serve output/temp files (handles " [output]" suffix from widget)
+# ---------------------------------------------------------------------------
+
+async def _serve_output_file(
+    request: web.Request,
+    clean_filename: str,
+    dir_type: str,
+    explicit_subfolder: str,
+) -> web.Response:
+    """Serve an output or temp file.
+
+    Called when the widget dropdown sends ``filename=photo.jpg [output]``
+    with ``type=input``.  We've already stripped the suffix; now locate the
+    file in the correct directory.
+    """
+    import folder_paths
+    import mimetypes
+
+    try:
+        if dir_type == "output":
+            base_dir = os.path.realpath(folder_paths.get_output_directory())
+        else:
+            base_dir = os.path.realpath(folder_paths.get_temp_directory())
+
+        # Resolve filename and subfolder
+        if "/" in clean_filename and not explicit_subfolder:
+            idx = clean_filename.rfind("/")
+            subfolder = clean_filename[:idx]
+            filename = clean_filename[idx + 1:]
+        else:
+            subfolder = explicit_subfolder
+            filename = clean_filename
+
+        if not filename:
+            return web.Response(status=400)
+
+        if ".." in filename or ".." in subfolder or filename.startswith("/"):
+            return web.Response(status=400)
+
+        if subfolder:
+            file_path = os.path.join(base_dir, subfolder, filename)
+        else:
+            file_path = os.path.join(base_dir, filename)
+
+        file_path = os.path.realpath(file_path)
+        if not file_path.startswith(base_dir + os.sep) and file_path != base_dir:
+            return web.Response(status=400)
+
+        # For non-admin users, restrict to their own output subfolder
+        user = request.get("multiuser_user")
+        if user and not user.get("is_admin"):
+            username = user["username"]
+            user_output_dir = os.path.realpath(
+                os.path.join(base_dir, username)
+            )
+            # Allow root-level files + user's own subfolder
+            is_root_file = os.path.dirname(file_path) == base_dir
+            is_own_file = file_path.startswith(user_output_dir + os.sep)
+            if not is_root_file and not is_own_file:
+                # Try user's subfolder as fallback
+                file_path = os.path.realpath(
+                    os.path.join(base_dir, username, filename)
+                )
+                if not os.path.isfile(file_path):
+                    return web.Response(status=404)
+
+        if not os.path.isfile(file_path):
+            return web.Response(status=404)
+
+        # Preview mode
+        if "preview" in request.query:
+            try:
+                from PIL import Image
+                from io import BytesIO
+
+                with Image.open(file_path) as img:
+                    preview_info = request.query["preview"].split(";")
+                    image_format = preview_info[0]
+                    if image_format not in ("webp", "jpeg"):
+                        image_format = "webp"
+
+                    quality = 90
+                    if preview_info[-1].isdigit():
+                        quality = int(preview_info[-1])
+
+                    buffer = BytesIO()
+                    if image_format == "jpeg" or request.query.get("channel") == "rgb":
+                        img = img.convert("RGB")
+                    img.save(buffer, format=image_format, quality=quality)
+                    buffer.seek(0)
+
+                    return web.Response(
+                        body=buffer.read(),
+                        content_type=f"image/{image_format}",
+                        headers={
+                            "Content-Disposition": f'filename="{filename}"',
+                            "Cache-Control": "public, max-age=86400",
+                        },
+                    )
+            except Exception:
+                pass  # Fall through to normal file serve
+
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        if content_type in {
+            "text/html", "text/html-sandboxed", "application/xhtml+xml",
+            "text/javascript", "text/css",
+        }:
+            content_type = "application/octet-stream"
+
+        return web.FileResponse(
+            file_path,
+            headers={
+                "Content-Disposition": f'filename="{filename}"',
+                "Content-Type": content_type,
+                "Cache-Control": "public, max-age=86400",
+            },
+        )
+
+    except Exception as exc:
+        print(f"[MULTIUSER] _serve_output_file: EXCEPTION: {exc}")
         import traceback
         traceback.print_exc()
         return web.Response(status=500)
