@@ -132,26 +132,35 @@ def install_isolation_middleware(app: web.Application) -> None:
                     filename = clean_filename
 
                 if filename:
+                    # Smart type resolution: ComfyUI's frontend always
+                    # requests with type=input for LoadImageOutput widget
+                    # values, even though the files live in the output dir.
+                    # Do a fast stat check to pick the correct dir type
+                    # upfront instead of a costly 404-then-retry.
+                    resolved_type = actual_type
+                    if actual_type in ("input", "output"):
+                        import folder_paths
+                        input_dir = folder_paths.get_input_directory()
+                        output_dir = folder_paths.get_output_directory()
+                        if subfolder:
+                            input_path = os.path.join(input_dir, subfolder, filename)
+                            output_path = os.path.join(output_dir, subfolder, filename)
+                        else:
+                            input_path = os.path.join(input_dir, filename)
+                            output_path = os.path.join(output_dir, filename)
+
+                        if actual_type == "input" and not os.path.isfile(input_path) and os.path.isfile(output_path):
+                            resolved_type = "output"
+                        elif actual_type == "output" and not os.path.isfile(output_path) and os.path.isfile(input_path):
+                            resolved_type = "input"
+
                     new_query = dict(request.query)
                     new_query["filename"] = filename
                     new_query["subfolder"] = subfolder
-                    new_query["type"] = actual_type
+                    new_query["type"] = resolved_type
                     new_url = request.rel_url.with_query(new_query)
                     cloned = request.clone(rel_url=new_url)
-                    resp = await handler(cloned)
-
-                    # Fallback: ComfyUI's frontend always requests with
-                    # type=input for LoadImageOutput widget values, but
-                    # the files live in the output directory.  If we got
-                    # a 404 and the request was for type=input, retry
-                    # with type=output.
-                    if resp.status == 404 and actual_type == "input":
-                        new_query["type"] = "output"
-                        new_url = request.rel_url.with_query(new_query)
-                        cloned = request.clone(rel_url=new_url)
-                        resp = await handler(cloned)
-
-                    return resp
+                    return await handler(cloned)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
