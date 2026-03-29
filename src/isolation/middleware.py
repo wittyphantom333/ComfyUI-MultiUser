@@ -96,19 +96,17 @@ def install_isolation_middleware(app: web.Application) -> None:
                 )
             return await _filter_history(request, handler, user)
 
-        # ── 3. Serve /view for user-subfolder files & [type] suffix ──
-        # ComfyUI's /view handler calls os.path.basename(filename), which
-        # strips directory components.  Files like "witt/photo.png" get
-        # looked up as just "photo.png" in the root input dir → 404.
-        # We only intercept when the filename contains a path separator
-        # (user subfolder) or a [type] suffix.  Plain filenames without
-        # these are left to ComfyUI's native handler for maximum perf.
+        # ── 3. Rewrite /view URLs for user-subfolder paths & [type] suffix ──
+        # ComfyUI's /view handler calls os.path.basename(filename) which
+        # strips directory components.  We split path separators into the
+        # proper subfolder param and strip [type] suffixes, then pass
+        # through to ComfyUI's native handler for actual file serving.
+        # No PIL, no file I/O — just a lightweight URL rewrite.
         if (
             request.path in _VIEW_PATHS
             and request.method == "GET"
         ):
             raw_filename = request.query.get("filename", "")
-            explicit_subfolder = request.query.get("subfolder", "")
             view_type = request.query.get("type", "output")
 
             # Parse ComfyUI's " [type]" suffix convention
@@ -119,22 +117,28 @@ def install_isolation_middleware(app: web.Application) -> None:
                 actual_type = _type_suffix.group(1)
                 clean_filename = raw_filename[:_type_suffix.start()]
 
-            # Only intercept if there's a reason ComfyUI can't handle it:
-            #  - filename has a path separator (user subfolder)
-            #  - a [type] suffix was present (cross-directory lookup)
-            #  - an explicit subfolder was provided
-            needs_interception = (
-                "/" in clean_filename
-                or _type_suffix is not None
-                or explicit_subfolder
-            )
+            # Only rewrite if the URL needs fixing
+            needs_rewrite = _type_suffix is not None or "/" in clean_filename
 
-            if needs_interception:
-                if actual_type == "input" and clean_filename:
-                    return await _serve_input_file(request, clean_filename, explicit_subfolder)
+            if needs_rewrite and clean_filename:
+                # Split directory path into subfolder param
+                explicit_subfolder = request.query.get("subfolder", "")
+                if "/" in clean_filename and not explicit_subfolder:
+                    idx = clean_filename.rfind("/")
+                    subfolder = clean_filename[:idx]
+                    filename = clean_filename[idx + 1:]
+                else:
+                    subfolder = explicit_subfolder
+                    filename = clean_filename
 
-                if actual_type in ("output", "temp") and clean_filename:
-                    return await _serve_output_file(request, clean_filename, actual_type, explicit_subfolder)
+                if filename:
+                    new_query = dict(request.query)
+                    new_query["filename"] = filename
+                    new_query["subfolder"] = subfolder
+                    new_query["type"] = actual_type
+                    new_url = request.rel_url.with_query(new_query)
+                    cloned = request.clone(rel_url=new_url)
+                    return await handler(cloned)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
