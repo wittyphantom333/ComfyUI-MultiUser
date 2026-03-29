@@ -622,7 +622,6 @@ async def _filter_internal_files(
         return web.json_response({"error": "Invalid directory type"}, status=400)
 
     username = user["username"]
-    is_admin = bool(user.get("is_admin"))
 
     from ..db.factory import get_db
     db = await get_db()
@@ -631,47 +630,38 @@ async def _filter_internal_files(
 
     visible_files: list[str] = []
 
-    if is_admin:
-        # Admins see ALL files
-        for dirpath, _subdirs, filenames in os.walk(base_dir):
+    # Everyone (including admins) sees only their own files + shared.
+    # Admin privileges are for user management, not browsing others' files.
+    user_dir = os.path.join(base_dir, username)
+    if os.path.isdir(user_dir):
+        for dirpath, _subdirs, filenames in os.walk(user_dir):
             for fname in filenames:
                 if fname.startswith("."):
                     continue
                 abs_path = os.path.join(dirpath, fname)
                 rel = os.path.relpath(abs_path, base_dir)
                 visible_files.append(rel)
-    else:
-        # Non-admins: own subfolder + shared (root-level + non-user dirs)
-        user_dir = os.path.join(base_dir, username)
-        if os.path.isdir(user_dir):
-            for dirpath, _subdirs, filenames in os.walk(user_dir):
+
+    # Shared files: root-level files + non-user directories
+    try:
+        root_entries = os.listdir(base_dir)
+    except OSError:
+        root_entries = []
+
+    for entry in root_entries:
+        full = os.path.join(base_dir, entry)
+        if entry.startswith("."):
+            continue
+        if os.path.isfile(full):
+            visible_files.append(entry)
+        elif os.path.isdir(full) and entry not in all_usernames:
+            for dirpath, _subdirs, filenames in os.walk(full):
                 for fname in filenames:
                     if fname.startswith("."):
                         continue
                     abs_path = os.path.join(dirpath, fname)
                     rel = os.path.relpath(abs_path, base_dir)
                     visible_files.append(rel)
-
-        # Shared files: root-level files + non-user directories
-        try:
-            root_entries = os.listdir(base_dir)
-        except OSError:
-            root_entries = []
-
-        for entry in root_entries:
-            full = os.path.join(base_dir, entry)
-            if entry.startswith("."):
-                continue
-            if os.path.isfile(full):
-                visible_files.append(entry)
-            elif os.path.isdir(full) and entry not in all_usernames:
-                for dirpath, _subdirs, filenames in os.walk(full):
-                    for fname in filenames:
-                        if fname.startswith("."):
-                            continue
-                        abs_path = os.path.join(dirpath, fname)
-                        rel = os.path.relpath(abs_path, base_dir)
-                        visible_files.append(rel)
 
     # Sort by filename (matching ComfyUI's original behavior for input,
     # or reverse mtime for output — but we don't have mtime readily, so sort alpha)
@@ -826,7 +816,6 @@ async def _filter_object_info(
     import folder_paths
 
     username = user["username"]
-    is_admin = bool(user.get("is_admin"))
 
     # ── Step 1: Get the original /object_info response ──
     try:
@@ -863,44 +852,36 @@ async def _filter_object_info(
 
         visible_files: list[str] = []
 
-        if is_admin:
-            for dirpath, _subdirs, filenames in os.walk(input_dir):
+        # Everyone (including admins) sees only their own files + shared.
+        if os.path.isdir(user_dir):
+            for dirpath, _subdirs, filenames in os.walk(user_dir):
                 for fname in filenames:
                     if fname.startswith("."):
                         continue
                     rel = os.path.relpath(os.path.join(dirpath, fname), input_dir)
                     visible_files.append(rel)
-        else:
-            # Own files
-            if os.path.isdir(user_dir):
-                for dirpath, _subdirs, filenames in os.walk(user_dir):
+
+        # Shared: root-level files + non-user directories
+        try:
+            root_entries = os.listdir(input_dir)
+        except OSError:
+            root_entries = []
+
+        for entry in root_entries:
+            if entry.startswith("."):
+                continue
+            full = os.path.join(input_dir, entry)
+            if os.path.isfile(full):
+                visible_files.append(entry)
+            elif os.path.isdir(full) and entry not in all_usernames:
+                for dirpath, _subdirs, filenames in os.walk(full):
                     for fname in filenames:
                         if fname.startswith("."):
                             continue
-                        rel = os.path.relpath(os.path.join(dirpath, fname), input_dir)
+                        rel = os.path.relpath(
+                            os.path.join(dirpath, fname), input_dir
+                        )
                         visible_files.append(rel)
-
-            # Shared: root-level files + non-user directories
-            try:
-                root_entries = os.listdir(input_dir)
-            except OSError:
-                root_entries = []
-
-            for entry in root_entries:
-                if entry.startswith("."):
-                    continue
-                full = os.path.join(input_dir, entry)
-                if os.path.isfile(full):
-                    visible_files.append(entry)
-                elif os.path.isdir(full) and entry not in all_usernames:
-                    for dirpath, _subdirs, filenames in os.walk(full):
-                        for fname in filenames:
-                            if fname.startswith("."):
-                                continue
-                            rel = os.path.relpath(
-                                os.path.join(dirpath, fname), input_dir
-                            )
-                            visible_files.append(rel)
 
         visible_files_set = set(visible_files)
     except Exception as exc:
