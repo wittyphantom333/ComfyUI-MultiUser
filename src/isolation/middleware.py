@@ -365,43 +365,48 @@ async def _serve_input_file(
 
         # Build candidate paths to try (in order)
         candidates = []
+        allowed_dirs = [input_dir]
 
-        # 1. Exact requested path
+        # 1. Exact requested path in input dir
         if subfolder:
             candidates.append(os.path.join(input_dir, subfolder, filename))
         else:
             candidates.append(os.path.join(input_dir, filename))
 
-        # 2. Fallback: try the user's own subfolder if file not found
+        # 2. Fallback: try the user's own input subfolder
         user = request.get("multiuser_user")
         if user:
             username = user["username"]
             if not subfolder:
-                # Bare filename — try user's subfolder
                 candidates.append(os.path.join(input_dir, username, filename))
             elif subfolder != username:
-                # Wrong subfolder — try user's subfolder too
                 candidates.append(os.path.join(input_dir, username, filename))
+
+        # 3. Fallback: check output directory too — the widget's "All" tab
+        #    mixes input files with execution history (output) items but
+        #    requests everything with type=input.
+        output_dir = os.path.realpath(folder_paths.get_output_directory())
+        allowed_dirs.append(output_dir)
+        candidates.append(os.path.join(output_dir, filename))
+        if user:
+            candidates.append(os.path.join(output_dir, username, filename))
 
         # Try each candidate
         file_path = None
         for cand in candidates:
             cand = os.path.realpath(cand)
-            # Security: ensure path stays inside input directory
-            if not cand.startswith(input_dir + os.sep) and cand != input_dir:
+            # Security: ensure path stays inside an allowed directory
+            if not any(
+                cand.startswith(d + os.sep) or cand == d
+                for d in allowed_dirs
+            ):
                 continue
             if os.path.isfile(cand):
                 file_path = cand
                 break
 
         if not file_path:
-            print(f"[MULTIUSER] _serve_input_file: NOT FOUND "
-                  f"candidates={[os.path.relpath(c, input_dir) for c in candidates]}, "
-                  f"raw={raw_filename!r}, subfolder={subfolder!r}")
             return web.Response(status=404)
-
-        print(f"[MULTIUSER] _serve_input_file: SERVING "
-              f"{os.path.relpath(file_path, input_dir)}")
 
         # Preview mode (thumbnail) — same as ComfyUI's handler
         if "preview" in request.query:
