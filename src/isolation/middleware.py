@@ -138,7 +138,20 @@ def install_isolation_middleware(app: web.Application) -> None:
                     new_query["type"] = actual_type
                     new_url = request.rel_url.with_query(new_query)
                     cloned = request.clone(rel_url=new_url)
-                    return await handler(cloned)
+                    resp = await handler(cloned)
+
+                    # Fallback: ComfyUI's frontend always requests with
+                    # type=input for LoadImageOutput widget values, but
+                    # the files live in the output directory.  If we got
+                    # a 404 and the request was for type=input, retry
+                    # with type=output.
+                    if resp.status == 404 and actual_type == "input":
+                        new_query["type"] = "output"
+                        new_url = request.rel_url.with_query(new_query)
+                        cloned = request.clone(rel_url=new_url)
+                        resp = await handler(cloned)
+
+                    return resp
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
