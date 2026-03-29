@@ -119,6 +119,13 @@ def install_isolation_middleware(app: web.Application) -> None:
                 request = request.clone(rel_url=cloned_url)
                 print(f"[MULTIUSER] /view path split: {raw_filename} → "
                       f"subfolder={new_subfolder}, filename={new_filename}, type={view_type}")
+
+                # Verify file exists for debugging
+                if view_type == "input":
+                    import folder_paths as _fp
+                    _check_dir = _fp.get_input_directory()
+                    _check_path = os.path.join(_check_dir, new_subfolder, new_filename)
+                    print(f"[MULTIUSER] /view file check: {_check_path} → exists={os.path.isfile(_check_path)}")
             elif view_type == "input":
                 print(f"[MULTIUSER] /view input (no split needed): filename={raw_filename}, "
                       f"subfolder={explicit_subfolder}")
@@ -169,13 +176,15 @@ def install_isolation_middleware(app: web.Application) -> None:
         ):
             return await _rewrite_upload(request, handler, user)
 
-        # ── 7. Filter /internal/files/{input,output} — ComfyUI's internal file API ──
+        # ── 7. Filter /internal/files/input — ComfyUI's internal file API ──
         # Modern ComfyUI uses /internal/files/input to populate node dropdowns
         # (e.g. LoadImage).  This is a sub-app, so we intercept before it
         # reaches the sub-app router and return our filtered list directly.
+        # NOTE: Only filter INPUT files — output files are not per-user isolated
+        # in the same way and filtering them breaks LoadImageOutput + asset browser.
         if (
             request.method == "GET"
-            and request.path in _INTERNAL_FILES_PATHS
+            and request.path == "/internal/files/input"
             and user
             and _is_enabled("per_user_inputs")
         ):
@@ -1032,7 +1041,8 @@ def install_internal_files_middleware(prompt_server_instance) -> None:
         # request.path may be "/internal/files/input" (if parent middleware
         # cloned the request) or "/files/input" (sub-app relative).
         directory_type = request.path.rsplit("/", 1)[-1]
-        if directory_type not in ("input", "output"):
+        # Only filter INPUT files — output isolation is handled differently
+        if directory_type != "input":
             return await handler(request)
 
         if not _is_enabled("per_user_inputs"):
