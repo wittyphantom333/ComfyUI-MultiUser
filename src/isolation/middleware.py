@@ -668,8 +668,7 @@ async def _filter_internal_files(
     visible_files.sort()
 
     print(f"[MULTIUSER] _filter_internal_files: user={username}, "
-          f"type={directory_type}, is_admin={is_admin}, "
-          f"files={len(visible_files)}")
+          f"type={directory_type}, files={len(visible_files)}")
 
     return web.json_response(visible_files)
 
