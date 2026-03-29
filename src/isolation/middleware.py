@@ -7,9 +7,11 @@ Intercepts ComfyUI endpoints to:
   4. Route /upload/image+mask into per-user input subdirectories.
   5. Filter /object_info so node dropdowns only list user's own input files.
 """
+import asyncio
 import json as json_mod
 import logging
 import os
+import re as _re
 
 from aiohttp import web
 
@@ -94,21 +96,13 @@ def install_isolation_middleware(app: web.Application) -> None:
                 )
             return await _filter_history(request, handler, user)
 
-        # ── 3. Serve /view?type=input directly for user-subfolder files ──
+        # ── 3. Serve /view for user-subfolder files & [type] suffix ──
         # ComfyUI's /view handler calls os.path.basename(filename), which
         # strips directory components.  Files like "witt/photo.png" get
         # looked up as just "photo.png" in the root input dir → 404.
-        # Instead of trying to clone the request (fragile across aiohttp
-        # versions), we serve input files directly when the filename
-        # contains a path separator.  This also handles path splitting
-        # for flat filenames with an explicit subfolder.
-        #
-        # ComfyUI convention: filenames can end with " [output]",
-        # " [input]", or " [temp]" to indicate directory type.
-        # The widget dropdown's "All" tab mixes input + output history
-        # items.  When the frontend requests a thumbnail for an output
-        # history item it sends  filename="photo.jpg [output]"&type=input.
-        # We parse the suffix, strip it, and serve from the right dir.
+        # We only intercept when the filename contains a path separator
+        # (user subfolder) or a [type] suffix.  Plain filenames without
+        # these are left to ComfyUI's native handler for maximum perf.
         if (
             request.path in _VIEW_PATHS
             and request.method == "GET"
@@ -120,18 +114,27 @@ def install_isolation_middleware(app: web.Application) -> None:
             # Parse ComfyUI's " [type]" suffix convention
             actual_type = view_type
             clean_filename = raw_filename
-            import re as _re
             _type_suffix = _re.search(r'\s+\[(input|output|temp)\]\s*$', raw_filename)
             if _type_suffix:
                 actual_type = _type_suffix.group(1)
                 clean_filename = raw_filename[:_type_suffix.start()]
 
-            if actual_type == "input" and clean_filename:
-                return await _serve_input_file(request, clean_filename, explicit_subfolder)
+            # Only intercept if there's a reason ComfyUI can't handle it:
+            #  - filename has a path separator (user subfolder)
+            #  - a [type] suffix was present (cross-directory lookup)
+            #  - an explicit subfolder was provided
+            needs_interception = (
+                "/" in clean_filename
+                or _type_suffix is not None
+                or explicit_subfolder
+            )
 
-            # " [output]" or " [temp]" suffix → serve from output/temp dir
-            if actual_type in ("output", "temp") and clean_filename:
-                return await _serve_output_file(request, clean_filename, actual_type, explicit_subfolder)
+            if needs_interception:
+                if actual_type == "input" and clean_filename:
+                    return await _serve_input_file(request, clean_filename, explicit_subfolder)
+
+                if actual_type in ("output", "temp") and clean_filename:
+                    return await _serve_output_file(request, clean_filename, actual_type, explicit_subfolder)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
@@ -319,6 +322,63 @@ async def _rewrite_upload(
 
 
 # ---------------------------------------------------------------------------
+#  Shared thumbnail generation (resizes + runs in thread pool)
+# ---------------------------------------------------------------------------
+
+_PREVIEW_MAX_SIZE = 256  # max dimension for dropdown thumbnails
+
+
+def _generate_preview_sync(file_path: str, image_format: str, quality: int, channel: str | None) -> bytes:
+    """Generate a resized thumbnail preview — runs in a thread pool."""
+    from PIL import Image
+    from io import BytesIO
+
+    with Image.open(file_path) as img:
+        # Resize to thumbnail dimensions to keep preview small + fast
+        img.thumbnail((_PREVIEW_MAX_SIZE, _PREVIEW_MAX_SIZE), Image.LANCZOS)
+
+        if image_format == "jpeg" or channel == "rgb":
+            img = img.convert("RGB")
+
+        buffer = BytesIO()
+        img.save(buffer, format=image_format, quality=quality)
+        return buffer.getvalue()
+
+
+async def _generate_preview(file_path: str, filename: str, request: web.Request) -> web.Response | None:
+    """Generate a thumbnail preview if ?preview= is in the query, or return None."""
+    if "preview" not in request.query:
+        return None
+
+    try:
+        preview_info = request.query["preview"].split(";")
+        image_format = preview_info[0]
+        if image_format not in ("webp", "jpeg"):
+            image_format = "webp"
+
+        quality = 90
+        if preview_info[-1].isdigit():
+            quality = int(preview_info[-1])
+
+        channel = request.query.get("channel")
+        body = await asyncio.to_thread(
+            _generate_preview_sync, file_path, image_format, quality, channel
+        )
+
+        return web.Response(
+            body=body,
+            content_type=f"image/{image_format}",
+            headers={
+                "Content-Disposition": f'filename="{filename}"',
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
+        )
+    except Exception as exc:
+        print(f"[MULTIUSER] _generate_preview: failed for {file_path}: {exc}")
+        return None  # Fall through to normal file serve
+
+
+# ---------------------------------------------------------------------------
 #  /view?type=input — serve input files directly (bypass ComfyUI's handler)
 # ---------------------------------------------------------------------------
 
@@ -410,39 +470,10 @@ async def _serve_input_file(
         if not file_path:
             return web.Response(status=404, headers=_NO_CACHE_HEADERS)
 
-        # Preview mode (thumbnail) — same as ComfyUI's handler
-        if "preview" in request.query:
-            try:
-                from PIL import Image
-                from io import BytesIO
-
-                with Image.open(file_path) as img:
-                    preview_info = request.query["preview"].split(";")
-                    image_format = preview_info[0]
-                    if image_format not in ("webp", "jpeg"):
-                        image_format = "webp"
-
-                    quality = 90
-                    if preview_info[-1].isdigit():
-                        quality = int(preview_info[-1])
-
-                    buffer = BytesIO()
-                    if image_format == "jpeg" or request.query.get("channel") == "rgb":
-                        img = img.convert("RGB")
-                    img.save(buffer, format=image_format, quality=quality)
-                    buffer.seek(0)
-
-                    return web.Response(
-                        body=buffer.read(),
-                        content_type=f"image/{image_format}",
-                        headers={
-                            "Content-Disposition": f'filename="{filename}"',
-                            "Cache-Control": "public, max-age=86400",
-                        },
-                    )
-            except Exception as exc:
-                print(f"[MULTIUSER] _serve_input_file: preview failed: {exc}")
-                # Fall through to normal file serve
+        # Preview mode (thumbnail) — resized + async
+        preview_resp = await _generate_preview(file_path, filename, request)
+        if preview_resp is not None:
+            return preview_resp
 
         # Serve the file directly
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -459,7 +490,7 @@ async def _serve_input_file(
             headers={
                 "Content-Disposition": f'filename="{filename}"',
                 "Content-Type": content_type,
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "public, max-age=31536000, immutable",
             },
         )
 
@@ -540,38 +571,10 @@ async def _serve_output_file(
         if not os.path.isfile(file_path):
             return web.Response(status=404, headers=_NO_CACHE_HEADERS)
 
-        # Preview mode
-        if "preview" in request.query:
-            try:
-                from PIL import Image
-                from io import BytesIO
-
-                with Image.open(file_path) as img:
-                    preview_info = request.query["preview"].split(";")
-                    image_format = preview_info[0]
-                    if image_format not in ("webp", "jpeg"):
-                        image_format = "webp"
-
-                    quality = 90
-                    if preview_info[-1].isdigit():
-                        quality = int(preview_info[-1])
-
-                    buffer = BytesIO()
-                    if image_format == "jpeg" or request.query.get("channel") == "rgb":
-                        img = img.convert("RGB")
-                    img.save(buffer, format=image_format, quality=quality)
-                    buffer.seek(0)
-
-                    return web.Response(
-                        body=buffer.read(),
-                        content_type=f"image/{image_format}",
-                        headers={
-                            "Content-Disposition": f'filename="{filename}"',
-                            "Cache-Control": "public, max-age=86400",
-                        },
-                    )
-            except Exception:
-                pass  # Fall through to normal file serve
+        # Preview mode (thumbnail) — resized + async
+        preview_resp = await _generate_preview(file_path, filename, request)
+        if preview_resp is not None:
+            return preview_resp
 
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         if content_type in {
@@ -585,7 +588,7 @@ async def _serve_output_file(
             headers={
                 "Content-Disposition": f'filename="{filename}"',
                 "Content-Type": content_type,
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "public, max-age=31536000, immutable",
             },
         )
 
