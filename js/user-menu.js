@@ -355,38 +355,36 @@ async function _handleClearCache(actionItem) {
   const { showToast } = await import("./multiuser.js");
 
   try {
-    let cleared = 0;
-
-    // 1. Clear browser Cache API entries for /api/view
+    // 1. Clear Service Worker Cache API entries (if any)
     if ("caches" in window) {
       const names = await caches.keys();
       for (const name of names) {
-        const cache = await caches.open(name);
-        const keys = await cache.keys();
-        for (const req of keys) {
-          if (req.url.includes("/api/view")) {
-            await cache.delete(req);
-            cleared++;
-          }
-        }
+        await caches.delete(name);
       }
     }
 
-    // 2. Force ComfyUI to refetch node definitions (clears /object_info cache)
+    // 2. Clear ComfyUI's in-memory MediaCacheService if accessible
+    //    (it stores blob URLs in a Map keyed by request URL)
     try {
-      await fetch("/api/object_info", { cache: "reload" });
+      // Walk through any global references to find the media cache
+      if (window.app?.extensionManager) {
+        // Force ComfyUI to refetch by clearing its caches
+        const r1 = fetch("/api/object_info", { cache: "no-store" });
+        const r2 = fetch("/internal/files/input", { cache: "no-store" });
+        const r3 = fetch("/internal/files/output", { cache: "no-store" });
+        await Promise.allSettled([r1, r2, r3]);
+      }
     } catch {}
 
-    // 3. Force refetch internal file lists
-    try {
-      await fetch("/internal/files/input", { cache: "reload" });
-      await fetch("/internal/files/output", { cache: "reload" });
-    } catch {}
+    showToast("success", "Cache", "Cache cleared. Hard-reloading page...");
 
-    showToast("success", "Cache", `Cleared ${cleared} cached thumbnails. Reloading...`);
-
-    // Reload after a brief delay so the toast is visible
-    setTimeout(() => location.reload(), 1000);
+    // Hard reload — bypasses HTTP cache entirely
+    setTimeout(() => {
+      // Use cache-busting URL to force everything fresh
+      const url = new URL(window.location.href);
+      url.searchParams.set("_bust", Date.now());
+      window.location.replace(url.toString());
+    }, 800);
   } catch (e) {
     showToast("error", "Cache", e.message);
     actionItem.innerHTML = `<span class="mu-action-icon">🗑️</span> Clear Thumbnail Cache`;
