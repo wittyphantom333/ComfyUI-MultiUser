@@ -324,6 +324,11 @@ async def _serve_input_file(
     This handler resolves the full path and serves the file, matching
     ComfyUI's response format (Content-Type, Content-Disposition, preview
     support).
+
+    Fallback: if the file isn't found at the requested location, try the
+    authenticated user's subfolder.  This handles the case where
+    ``/object_info`` lists a file as a bare name but the file actually
+    lives in the user's subfolder.
     """
     import folder_paths
     import mimetypes
@@ -349,24 +354,45 @@ async def _serve_input_file(
             print(f"[MULTIUSER] _serve_input_file: path traversal rejected")
             return web.Response(status=400)
 
-        # Build and verify the file path
+        # Build candidate paths to try (in order)
+        candidates = []
+
+        # 1. Exact requested path
         if subfolder:
-            file_path = os.path.realpath(os.path.join(input_dir, subfolder, filename))
+            candidates.append(os.path.join(input_dir, subfolder, filename))
         else:
-            file_path = os.path.realpath(os.path.join(input_dir, filename))
+            candidates.append(os.path.join(input_dir, filename))
 
-        # Security: ensure path stays inside input directory
-        if not file_path.startswith(input_dir + os.sep) and file_path != input_dir:
-            print(f"[MULTIUSER] _serve_input_file: path escape! "
-                  f"input_dir={input_dir}, file_path={file_path}")
-            return web.Response(status=403)
+        # 2. Fallback: try the user's own subfolder if file not found
+        user = request.get("multiuser_user")
+        if user:
+            username = user["username"]
+            if not subfolder:
+                # Bare filename — try user's subfolder
+                candidates.append(os.path.join(input_dir, username, filename))
+            elif subfolder != username:
+                # Wrong subfolder — try user's subfolder too
+                candidates.append(os.path.join(input_dir, username, filename))
 
-        if not os.path.isfile(file_path):
+        # Try each candidate
+        file_path = None
+        for cand in candidates:
+            cand = os.path.realpath(cand)
+            # Security: ensure path stays inside input directory
+            if not cand.startswith(input_dir + os.sep) and cand != input_dir:
+                continue
+            if os.path.isfile(cand):
+                file_path = cand
+                break
+
+        if not file_path:
             print(f"[MULTIUSER] _serve_input_file: NOT FOUND "
-                  f"file_path={file_path}, subfolder={subfolder!r}, filename={filename!r}")
+                  f"candidates={[os.path.relpath(c, input_dir) for c in candidates]}, "
+                  f"raw={raw_filename!r}, subfolder={subfolder!r}")
             return web.Response(status=404)
 
-        print(f"[MULTIUSER] _serve_input_file: SERVING {file_path}")
+        print(f"[MULTIUSER] _serve_input_file: SERVING "
+              f"{os.path.relpath(file_path, input_dir)}")
 
         # Preview mode (thumbnail) — same as ComfyUI's handler
         if "preview" in request.query:
