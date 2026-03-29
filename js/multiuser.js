@@ -214,6 +214,62 @@ app.registerExtension({
    * We check auth state here and show login if needed.
    */
   async init() {
+    // ── Patch fetch() to redirect input thumbnails to our own endpoint ──
+    // ComfyUI's WidgetSelect dropdown fetches input thumbnails via
+    //   /api/view?filename=...&type=input
+    // with {cache:"force-cache"} and no auth headers.  Our own
+    // /multiuser/inputs/thumbnail endpoint handles auth via cookies,
+    // generates proper WebP thumbnails, and resolves user-subfolder
+    // paths correctly.  This patch catches those requests transparently.
+    if (!window.__mu_fetch_patched) {
+      const _origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        try {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof Request
+                ? input.url
+                : String(input);
+
+          // Match /api/view?...type=input or /view?...type=input
+          if (
+            (url.includes("/api/view?") || url.includes("/view?")) &&
+            url.includes("type=input")
+          ) {
+            const parsed = new URL(url, location.origin);
+            if (parsed.searchParams.get("type") === "input") {
+              const rawFilename = parsed.searchParams.get("filename") || "";
+              const rawSubfolder = parsed.searchParams.get("subfolder") || "";
+
+              // Resolve the filename and subfolder
+              let filename = rawFilename;
+              let subfolder = rawSubfolder;
+              if (filename.includes("/") && !subfolder) {
+                const idx = filename.lastIndexOf("/");
+                subfolder = filename.substring(0, idx);
+                filename = filename.substring(idx + 1);
+              }
+
+              const thumbUrl =
+                `/multiuser/inputs/thumbnail?` +
+                new URLSearchParams({
+                  filename,
+                  subfolder,
+                  size: "256",
+                }).toString();
+
+              return _origFetch.call(this, thumbUrl, init);
+            }
+          }
+        } catch (e) {
+          // If URL parsing fails, fall through to normal fetch
+        }
+        return _origFetch.call(this, input, init);
+      };
+      window.__mu_fetch_patched = true;
+    }
+
     let user = await getCurrentUser();
 
     if (!user) {
