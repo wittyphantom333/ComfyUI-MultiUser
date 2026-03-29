@@ -107,7 +107,18 @@ def install_isolation_middleware(app: web.Application) -> None:
             explicit_subfolder = request.query.get("subfolder", "")
             view_type = request.query.get("type", "output")
 
+            # Log ALL /view requests so we can trace what the frontend sends
+            if view_type == "input":
+                print(f"[MULTIUSER] /view REQUEST: path={request.path}, "
+                      f"filename={raw_filename!r}, subfolder={explicit_subfolder!r}, "
+                      f"type={view_type}, has_slash={'/' in raw_filename}")
+
             if view_type == "input" and ("/" in raw_filename or explicit_subfolder):
+                return await _serve_input_file(request, raw_filename, explicit_subfolder)
+
+            # Also serve root-level input files (no subfolder) directly
+            # to ensure consistent behavior
+            if view_type == "input" and raw_filename:
                 return await _serve_input_file(request, raw_filename, explicit_subfolder)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
@@ -317,86 +328,104 @@ async def _serve_input_file(
     import folder_paths
     import mimetypes
 
-    input_dir = folder_paths.get_input_directory()
+    try:
+        input_dir = os.path.realpath(folder_paths.get_input_directory())
 
-    # Resolve filename and subfolder
-    if "/" in raw_filename and not explicit_subfolder:
-        idx = raw_filename.rfind("/")
-        subfolder = raw_filename[:idx]
-        filename = raw_filename[idx + 1:]
-    else:
-        subfolder = explicit_subfolder
-        filename = raw_filename
+        # Resolve filename and subfolder
+        if "/" in raw_filename and not explicit_subfolder:
+            idx = raw_filename.rfind("/")
+            subfolder = raw_filename[:idx]
+            filename = raw_filename[idx + 1:]
+        else:
+            subfolder = explicit_subfolder
+            filename = raw_filename
 
-    if not filename:
-        return web.Response(status=400)
+        if not filename:
+            print(f"[MULTIUSER] _serve_input_file: empty filename")
+            return web.Response(status=400)
 
-    # Security: reject path traversal
-    if ".." in filename or ".." in subfolder or filename.startswith("/"):
-        return web.Response(status=400)
+        # Security: reject path traversal
+        if ".." in filename or ".." in subfolder or filename.startswith("/"):
+            print(f"[MULTIUSER] _serve_input_file: path traversal rejected")
+            return web.Response(status=400)
 
-    # Build and verify the file path
-    if subfolder:
-        file_path = os.path.join(input_dir, subfolder, filename)
-    else:
-        file_path = os.path.join(input_dir, filename)
+        # Build and verify the file path
+        if subfolder:
+            file_path = os.path.realpath(os.path.join(input_dir, subfolder, filename))
+        else:
+            file_path = os.path.realpath(os.path.join(input_dir, filename))
 
-    file_path = os.path.abspath(file_path)
+        # Security: ensure path stays inside input directory
+        if not file_path.startswith(input_dir + os.sep) and file_path != input_dir:
+            print(f"[MULTIUSER] _serve_input_file: path escape! "
+                  f"input_dir={input_dir}, file_path={file_path}")
+            return web.Response(status=403)
 
-    # Security: ensure path stays inside input directory
-    if os.path.commonpath((input_dir, file_path)) != input_dir:
-        return web.Response(status=403)
+        if not os.path.isfile(file_path):
+            print(f"[MULTIUSER] _serve_input_file: NOT FOUND "
+                  f"file_path={file_path}, subfolder={subfolder!r}, filename={filename!r}")
+            return web.Response(status=404)
 
-    if not os.path.isfile(file_path):
-        return web.Response(status=404)
+        print(f"[MULTIUSER] _serve_input_file: SERVING {file_path}")
 
-    # Preview mode (thumbnail) — same as ComfyUI's handler
-    if "preview" in request.query:
-        try:
-            from PIL import Image
-            from io import BytesIO
+        # Preview mode (thumbnail) — same as ComfyUI's handler
+        if "preview" in request.query:
+            try:
+                from PIL import Image
+                from io import BytesIO
 
-            with Image.open(file_path) as img:
-                preview_info = request.query["preview"].split(";")
-                image_format = preview_info[0]
-                if image_format not in ("webp", "jpeg"):
-                    image_format = "webp"
+                with Image.open(file_path) as img:
+                    preview_info = request.query["preview"].split(";")
+                    image_format = preview_info[0]
+                    if image_format not in ("webp", "jpeg"):
+                        image_format = "webp"
 
-                quality = 90
-                if preview_info[-1].isdigit():
-                    quality = int(preview_info[-1])
+                    quality = 90
+                    if preview_info[-1].isdigit():
+                        quality = int(preview_info[-1])
 
-                buffer = BytesIO()
-                if image_format == "jpeg" or request.query.get("channel") == "rgb":
-                    img = img.convert("RGB")
-                img.save(buffer, format=image_format, quality=quality)
-                buffer.seek(0)
+                    buffer = BytesIO()
+                    if image_format == "jpeg" or request.query.get("channel") == "rgb":
+                        img = img.convert("RGB")
+                    img.save(buffer, format=image_format, quality=quality)
+                    buffer.seek(0)
 
-                return web.Response(
-                    body=buffer.read(),
-                    content_type=f"image/{image_format}",
-                    headers={"Content-Disposition": f'filename="{filename}"'},
-                )
-        except Exception:
-            pass  # Fall through to normal file serve
+                    return web.Response(
+                        body=buffer.read(),
+                        content_type=f"image/{image_format}",
+                        headers={
+                            "Content-Disposition": f'filename="{filename}"',
+                            "Cache-Control": "public, max-age=86400",
+                        },
+                    )
+            except Exception as exc:
+                print(f"[MULTIUSER] _serve_input_file: preview failed: {exc}")
+                # Fall through to normal file serve
 
-    # Serve the file directly
-    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        # Serve the file directly
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-    # Security: force download for dangerous MIME types
-    if content_type in {
-        "text/html", "text/html-sandboxed", "application/xhtml+xml",
-        "text/javascript", "text/css",
-    }:
-        content_type = "application/octet-stream"
+        # Security: force download for dangerous MIME types
+        if content_type in {
+            "text/html", "text/html-sandboxed", "application/xhtml+xml",
+            "text/javascript", "text/css",
+        }:
+            content_type = "application/octet-stream"
 
-    return web.FileResponse(
-        file_path,
-        headers={
-            "Content-Disposition": f'filename="{filename}"',
-            "Content-Type": content_type,
-        },
-    )
+        return web.FileResponse(
+            file_path,
+            headers={
+                "Content-Disposition": f'filename="{filename}"',
+                "Content-Type": content_type,
+                "Cache-Control": "public, max-age=86400",
+            },
+        )
+
+    except Exception as exc:
+        print(f"[MULTIUSER] _serve_input_file: EXCEPTION: {exc}")
+        import traceback
+        traceback.print_exc()
+        return web.Response(status=500)
 
 
 # ---------------------------------------------------------------------------
