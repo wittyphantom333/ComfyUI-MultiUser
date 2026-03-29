@@ -91,12 +91,14 @@ def install_isolation_middleware(app: web.Application) -> None:
                 )
             return await _filter_history(request, handler, user)
 
-        # ── 3. Fix /view when filename contains embedded path ──
-        # The new ComfyUI Vue frontend sends /view?filename=subfolder/file.png
-        # without a separate subfolder param.  ComfyUI's /view handler calls
-        # os.path.basename(filename), losing the subfolder.  We split the path
-        # and clone the request with proper subfolder + bare filename so the
-        # file actually resolves.  This must run for ALL users (admins too).
+        # ── 3. Serve /view?type=input directly for user-subfolder files ──
+        # ComfyUI's /view handler calls os.path.basename(filename), which
+        # strips directory components.  Files like "witt/photo.png" get
+        # looked up as just "photo.png" in the root input dir → 404.
+        # Instead of trying to clone the request (fragile across aiohttp
+        # versions), we serve input files directly when the filename
+        # contains a path separator.  This also handles path splitting
+        # for flat filenames with an explicit subfolder.
         if (
             request.path in _VIEW_PATHS
             and request.method == "GET"
@@ -105,30 +107,8 @@ def install_isolation_middleware(app: web.Application) -> None:
             explicit_subfolder = request.query.get("subfolder", "")
             view_type = request.query.get("type", "output")
 
-            if "/" in raw_filename and not explicit_subfolder:
-                # Split "dir/subdir/file.png" → subfolder="dir/subdir", filename="file.png"
-                idx = raw_filename.rfind("/")
-                new_subfolder = raw_filename[:idx]
-                new_filename = raw_filename[idx + 1:]
-
-                from yarl import URL
-                new_query = dict(request.query)
-                new_query["filename"] = new_filename
-                new_query["subfolder"] = new_subfolder
-                cloned_url = URL(request.path).with_query(new_query)
-                request = request.clone(rel_url=cloned_url)
-                print(f"[MULTIUSER] /view path split: {raw_filename} → "
-                      f"subfolder={new_subfolder}, filename={new_filename}, type={view_type}")
-
-                # Verify file exists for debugging
-                if view_type == "input":
-                    import folder_paths as _fp
-                    _check_dir = _fp.get_input_directory()
-                    _check_path = os.path.join(_check_dir, new_subfolder, new_filename)
-                    print(f"[MULTIUSER] /view file check: {_check_path} → exists={os.path.isfile(_check_path)}")
-            elif view_type == "input":
-                print(f"[MULTIUSER] /view input (no split needed): filename={raw_filename}, "
-                      f"subfolder={explicit_subfolder}")
+            if view_type == "input" and ("/" in raw_filename or explicit_subfolder):
+                return await _serve_input_file(request, raw_filename, explicit_subfolder)
 
         # ── 3b. Restrict /view to user's own output subfolder ──
         if (
@@ -314,6 +294,109 @@ async def _rewrite_upload(
         "subfolder": subfolder,
         "type": image_upload_type,
     })
+
+
+# ---------------------------------------------------------------------------
+#  /view?type=input — serve input files directly (bypass ComfyUI's handler)
+# ---------------------------------------------------------------------------
+
+async def _serve_input_file(
+    request: web.Request, raw_filename: str, explicit_subfolder: str
+) -> web.Response:
+    """Serve an input file directly, resolving user-subfolder paths.
+
+    ComfyUI's ``/view`` handler calls ``os.path.basename(filename)`` which
+    strips directory components.  Files stored as ``input/witt/photo.png``
+    would need ``subfolder=witt&filename=photo.png``, but the frontend
+    sends ``filename=witt/photo.png`` with no subfolder.
+
+    This handler resolves the full path and serves the file, matching
+    ComfyUI's response format (Content-Type, Content-Disposition, preview
+    support).
+    """
+    import folder_paths
+    import mimetypes
+
+    input_dir = folder_paths.get_input_directory()
+
+    # Resolve filename and subfolder
+    if "/" in raw_filename and not explicit_subfolder:
+        idx = raw_filename.rfind("/")
+        subfolder = raw_filename[:idx]
+        filename = raw_filename[idx + 1:]
+    else:
+        subfolder = explicit_subfolder
+        filename = raw_filename
+
+    if not filename:
+        return web.Response(status=400)
+
+    # Security: reject path traversal
+    if ".." in filename or ".." in subfolder or filename.startswith("/"):
+        return web.Response(status=400)
+
+    # Build and verify the file path
+    if subfolder:
+        file_path = os.path.join(input_dir, subfolder, filename)
+    else:
+        file_path = os.path.join(input_dir, filename)
+
+    file_path = os.path.abspath(file_path)
+
+    # Security: ensure path stays inside input directory
+    if os.path.commonpath((input_dir, file_path)) != input_dir:
+        return web.Response(status=403)
+
+    if not os.path.isfile(file_path):
+        return web.Response(status=404)
+
+    # Preview mode (thumbnail) — same as ComfyUI's handler
+    if "preview" in request.query:
+        try:
+            from PIL import Image
+            from io import BytesIO
+
+            with Image.open(file_path) as img:
+                preview_info = request.query["preview"].split(";")
+                image_format = preview_info[0]
+                if image_format not in ("webp", "jpeg"):
+                    image_format = "webp"
+
+                quality = 90
+                if preview_info[-1].isdigit():
+                    quality = int(preview_info[-1])
+
+                buffer = BytesIO()
+                if image_format == "jpeg" or request.query.get("channel") == "rgb":
+                    img = img.convert("RGB")
+                img.save(buffer, format=image_format, quality=quality)
+                buffer.seek(0)
+
+                return web.Response(
+                    body=buffer.read(),
+                    content_type=f"image/{image_format}",
+                    headers={"Content-Disposition": f'filename="{filename}"'},
+                )
+        except Exception:
+            pass  # Fall through to normal file serve
+
+    # Serve the file directly
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    # Security: force download for dangerous MIME types
+    if content_type in {
+        "text/html", "text/html-sandboxed", "application/xhtml+xml",
+        "text/javascript", "text/css",
+    }:
+        content_type = "application/octet-stream"
+
+    return web.FileResponse(
+        file_path,
+        headers={
+            "Content-Disposition": f'filename="{filename}"',
+            "Content-Type": content_type,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
