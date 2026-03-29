@@ -273,6 +273,9 @@ export function renderUserSidebar(el, user) {
         <li class="mu-action-item" data-action="stats">
           <span class="mu-action-icon">📊</span> My Stats
         </li>
+        <li class="mu-action-item" data-action="clearcache">
+          <span class="mu-action-icon">🗑️</span> Clear Thumbnail Cache
+        </li>
         <li class="mu-divider"></li>
         <li class="mu-action-item danger" data-action="logout">
           <span class="mu-action-icon">🚪</span> Sign Out
@@ -304,10 +307,11 @@ export function renderUserSidebar(el, user) {
     item.addEventListener("click", () => {
       const action = item.dataset.action;
       switch (action) {
-        case "password": _handleChangePassword(); break;
-        case "tokens":   _toggleTokensSection(container); break;
-        case "stats":    _toggleStatsSection(container); break;
-        case "logout":   _handleLogout(); break;
+        case "password":    _handleChangePassword(); break;
+        case "tokens":      _toggleTokensSection(container); break;
+        case "stats":       _toggleStatsSection(container); break;
+        case "clearcache":  _handleClearCache(item); break;
+        case "logout":      _handleLogout(); break;
       }
     });
   });
@@ -342,6 +346,49 @@ async function _handleChangePassword() {
     else showToast("error", "Password", data.error || "Error");
   } catch (e) {
     showToast("error", "Password", e.message);
+  }
+}
+
+async function _handleClearCache(actionItem) {
+  const origText = actionItem.textContent;
+  actionItem.textContent = "⏳ Clearing...";
+
+  try {
+    let cleared = 0;
+
+    // 1. Clear browser Cache API entries for /api/view
+    if ("caches" in window) {
+      const names = await caches.keys();
+      for (const name of names) {
+        const cache = await caches.open(name);
+        const keys = await cache.keys();
+        for (const req of keys) {
+          if (req.url.includes("/api/view")) {
+            await cache.delete(req);
+            cleared++;
+          }
+        }
+      }
+    }
+
+    // 2. Force ComfyUI to refetch node definitions (clears /object_info cache)
+    try {
+      await fetch("/api/object_info", { cache: "reload" });
+    } catch {}
+
+    // 3. Force refetch internal file lists
+    try {
+      await fetch("/internal/files/input", { cache: "reload" });
+      await fetch("/internal/files/output", { cache: "reload" });
+    } catch {}
+
+    showToast("success", "Cache", `Cleared ${cleared} cached thumbnails. Reloading...`);
+
+    // Reload after a brief delay so the toast is visible
+    setTimeout(() => location.reload(), 1000);
+  } catch (e) {
+    showToast("error", "Cache", e.message);
+    actionItem.innerHTML = `<span class="mu-action-icon">🗑️</span> Clear Thumbnail Cache`;
   }
 }
 

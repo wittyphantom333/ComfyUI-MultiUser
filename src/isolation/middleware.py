@@ -29,6 +29,9 @@ _UPLOAD_PATHS = ("/upload/image", "/api/upload/image")
 _OBJECT_INFO_PATHS = ("/object_info", "/object_info/", "/api/object_info", "/api/object_info/")
 _INTERNAL_FILES_PATHS = ("/internal/files/input", "/internal/files/output")
 
+# Headers to prevent browsers from caching error responses (404, 400, etc.)
+_NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+
 
 def _is_enabled(key: str) -> bool:
     return bool(get_config("isolation", key, default=True))
@@ -405,7 +408,7 @@ async def _serve_input_file(
                 break
 
         if not file_path:
-            return web.Response(status=404)
+            return web.Response(status=404, headers=_NO_CACHE_HEADERS)
 
         # Preview mode (thumbnail) — same as ComfyUI's handler
         if "preview" in request.query:
@@ -532,10 +535,10 @@ async def _serve_output_file(
                     os.path.join(base_dir, username, filename)
                 )
                 if not os.path.isfile(file_path):
-                    return web.Response(status=404)
+                    return web.Response(status=404, headers=_NO_CACHE_HEADERS)
 
         if not os.path.isfile(file_path):
-            return web.Response(status=404)
+            return web.Response(status=404, headers=_NO_CACHE_HEADERS)
 
         # Preview mode
         if "preview" in request.query:
