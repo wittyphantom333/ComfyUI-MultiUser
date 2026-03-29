@@ -677,6 +677,10 @@ async def _filter_internal_files(
     # or reverse mtime for output — but we don't have mtime readily, so sort alpha)
     visible_files.sort()
 
+    print(f"[MULTIUSER] _filter_internal_files: user={username}, "
+          f"type={directory_type}, is_admin={is_admin}, "
+          f"files={len(visible_files)}")
+
     return web.json_response(visible_files)
 
 
