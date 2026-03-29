@@ -176,15 +176,14 @@ def install_isolation_middleware(app: web.Application) -> None:
         ):
             return await _rewrite_upload(request, handler, user)
 
-        # ── 7. Filter /internal/files/input — ComfyUI's internal file API ──
-        # Modern ComfyUI uses /internal/files/input to populate node dropdowns
-        # (e.g. LoadImage).  This is a sub-app, so we intercept before it
-        # reaches the sub-app router and return our filtered list directly.
-        # NOTE: Only filter INPUT files — output files are not per-user isolated
-        # in the same way and filtering them breaks LoadImageOutput + asset browser.
+        # ── 7. Filter /internal/files/{input,output} — ComfyUI's internal file API ──
+        # Modern ComfyUI uses /internal/files/{type} to populate node dropdowns
+        # (e.g. LoadImage uses /input, LoadImageOutput uses /output).
+        # ComfyUI only lists root-level files by default, so user subfolder
+        # files won't appear.  We intercept and return the full user-scoped list.
         if (
             request.method == "GET"
-            and request.path == "/internal/files/input"
+            and request.path in ("/internal/files/input", "/internal/files/output")
             and user
             and _is_enabled("per_user_inputs")
         ):
@@ -1319,8 +1318,8 @@ def install_internal_files_middleware(prompt_server_instance) -> None:
         # request.path may be "/internal/files/input" (if parent middleware
         # cloned the request) or "/files/input" (sub-app relative).
         directory_type = request.path.rsplit("/", 1)[-1]
-        # Only filter INPUT files — output isolation is handled differently
-        if directory_type != "input":
+        # Filter both input and output directories
+        if directory_type not in ("input", "output"):
             return await handler(request)
 
         if not _is_enabled("per_user_inputs"):
