@@ -11,6 +11,7 @@ Features:
   - Per-user 0-5 star rating system
   - PNG/EXIF metadata extraction and viewing
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -243,28 +244,45 @@ def _file_info(path: Path, output_dir: Path) -> dict:
     return info
 
 
+# Permanent cache for enrichment data (dimensions, duration, sidecar).
+# Keyed by (abs_path, mtime_ns) so stale entries are ignored.
+_enrich_cache: dict[tuple[str, float], dict] = {}
+
+
 def _enrich_file_info(info: dict, output_dir: Path) -> dict:
     """Add expensive metadata (dimensions, duration, sidecar) to a file info dict.
 
-    Called only for files in the current page to avoid scanning every file.
+    Results are permanently cached per file+mtime so ffprobe/PIL only runs once.
     """
-    path = Path(info.pop("_abs_path", ""))
+    abs_path = info.pop("_abs_path", "")
+    path = Path(abs_path)
     if not path.is_file():
         return info
+
+    cache_key = (abs_path, info.get("modified", 0))
+    cached = _enrich_cache.get(cache_key)
+    if cached is not None:
+        info.update(cached)
+        return info
+
+    extra: dict = {}
     is_video = info.get("type") == "video"
     # Flag videos that have a sidecar thumbnail
     if is_video and _get_video_sidecar(path):
-        info["has_sidecar"] = True
+        extra["has_sidecar"] = True
     # Include dimensions for resolution badge
     dims = _get_dimensions(path)
     if dims:
-        info["width"] = dims[0]
-        info["height"] = dims[1]
+        extra["width"] = dims[0]
+        extra["height"] = dims[1]
     # Include duration for video files
     if is_video:
         dur = _get_video_duration(path)
         if dur is not None:
-            info["duration"] = round(dur, 2)
+            extra["duration"] = round(dur, 2)
+
+    _enrich_cache[cache_key] = extra
+    info.update(extra)
     return info
 
 
@@ -706,17 +724,23 @@ def setup_output_routes(routes):
 
         db = await get_db()
 
+        _t0 = time.time()
+
         # ── Collect files (cached) ──
         user_dir = output_dir / username
         cached = _get_cached_files(username, output_dir)
         if cached is not None:
             # Deep-copy so filter mutations don't corrupt cache
             files = [dict(f) for f in cached]
+            _cache_hit = True
         else:
             files = _scan_user_files(user_dir, output_dir)
             _set_cached_files(username, files)
             # Work on copies so cache stays clean
             files = [dict(f) for f in files]
+            _cache_hit = False
+
+        _t1 = time.time()
 
         # Apply search filter
         if search:
@@ -817,12 +841,21 @@ def setup_output_routes(routes):
             if "rating" not in f:
                 f["rating"] = ratings_map.get(rp, 0)
 
-        # Enrich only the current page with expensive metadata
-        for f in page_files:
-            _enrich_file_info(f, output_dir)
+        # Enrich page with expensive metadata (in thread to avoid blocking event loop)
+        _od = output_dir
+        def _do_enrich():
+            for f in page_files:
+                _enrich_file_info(f, _od)
+        await asyncio.get_event_loop().run_in_executor(None, _do_enrich)
+        _t2 = time.time()
         # Strip internal fields from page entries only
         for f in page_files:
             f.pop("_abs_path", None)
+
+        logger.info(
+            "list_outputs: user=%s files=%d page=%d cache=%s scan=%.3fs enrich=%.3fs total=%.3fs",
+            username, total, page, _cache_hit, _t1 - _t0, _t2 - _t1, _t2 - _t0,
+        )
 
         return web.json_response({
             "files": page_files,
@@ -982,9 +1015,12 @@ def setup_output_routes(routes):
             if "rating" not in f:
                 f["rating"] = ratings_map.get(rp, 0)
 
-        # Enrich only the current page with expensive metadata
-        for f in page_files:
-            _enrich_file_info(f, output_dir)
+        # Enrich page with expensive metadata (in thread to avoid blocking event loop)
+        _od = output_dir
+        def _do_enrich_all():
+            for f in page_files:
+                _enrich_file_info(f, _od)
+        await asyncio.get_event_loop().run_in_executor(None, _do_enrich_all)
         # Strip internal fields from page entries only
         for f in page_files:
             f.pop("_abs_path", None)
