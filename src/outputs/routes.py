@@ -217,7 +217,12 @@ def _get_video_duration(path: Path) -> Optional[float]:
 
 
 def _file_info(path: Path, output_dir: Path) -> dict:
-    """Build a metadata dict for a single file."""
+    """Build a metadata dict for a single file.
+
+    This is the FAST version used during directory scanning — only stat()
+    calls, no PIL or ffprobe.  Expensive metadata (dimensions, duration)
+    is added later by _enrich_file_info() only for the paginated page.
+    """
     rel = path.relative_to(output_dir)
     stat = path.stat()
     ext = path.suffix.lower()
@@ -232,8 +237,21 @@ def _file_info(path: Path, output_dir: Path) -> dict:
         "size": stat.st_size,
         "modified": mtime,
         "type": "video" if is_video else "image",
-        "format": ext.lstrip(".").upper(),  # PNG, JPG, MP4, WEBM, etc.
+        "format": ext.lstrip(".").upper(),
+        "_abs_path": str(path),  # internal, stripped before JSON response
     }
+    return info
+
+
+def _enrich_file_info(info: dict, output_dir: Path) -> dict:
+    """Add expensive metadata (dimensions, duration, sidecar) to a file info dict.
+
+    Called only for files in the current page to avoid scanning every file.
+    """
+    path = Path(info.pop("_abs_path", ""))
+    if not path.is_file():
+        return info
+    is_video = info.get("type") == "video"
     # Flag videos that have a sidecar thumbnail
     if is_video and _get_video_sidecar(path):
         info["has_sidecar"] = True
@@ -747,6 +765,13 @@ def setup_output_routes(routes):
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
 
+        # Enrich only the current page with expensive metadata
+        for f in page_files:
+            _enrich_file_info(f, output_dir)
+        # Strip internal fields from all entries
+        for f in files:
+            f.pop("_abs_path", None)
+
         return web.json_response({
             "files": page_files,
             "total": total,
@@ -867,6 +892,13 @@ def setup_output_routes(routes):
         total = len(files)
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
+
+        # Enrich only the current page with expensive metadata
+        for f in page_files:
+            _enrich_file_info(f, output_dir)
+        # Strip internal fields from all entries
+        for f in files:
+            f.pop("_abs_path", None)
 
         return web.json_response({
             "files": page_files,
