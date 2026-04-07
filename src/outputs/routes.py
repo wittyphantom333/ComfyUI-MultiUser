@@ -630,6 +630,43 @@ def _parse_comfyui_prompt(prompt: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+#  In-memory file-list cache (avoids re-scanning the filesystem every request)
+# ---------------------------------------------------------------------------
+
+_file_cache: dict[str, dict] = {}  # username → {"files": [...], "expires": float}
+_FILE_CACHE_TTL = 10  # seconds
+
+
+def _get_cached_files(username: str, output_dir: Path) -> list[dict] | None:
+    """Return cached file list for a user, or None if expired/missing."""
+    entry = _file_cache.get(username)
+    if entry and time.time() < entry["expires"]:
+        return entry["files"]
+    return None
+
+
+def _set_cached_files(username: str, files: list[dict]) -> None:
+    """Cache the scanned file list for a user."""
+    _file_cache[username] = {
+        "files": files,
+        "expires": time.time() + _FILE_CACHE_TTL,
+    }
+
+
+def _scan_user_files(user_dir: Path, output_dir: Path) -> list[dict]:
+    """Scan a user's output directory and return lightweight file info dicts."""
+    files: list[dict] = []
+    if not user_dir.is_dir():
+        return files
+    for entry in user_dir.rglob("*"):
+        if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
+            if _is_video_sidecar(entry):
+                continue
+            files.append(_file_info(entry, output_dir))
+    return files
+
+
+# ---------------------------------------------------------------------------
 #  Route setup
 # ---------------------------------------------------------------------------
 
@@ -656,7 +693,6 @@ def setup_output_routes(routes):
                 "files": [], "total": 0, "page": 1, "per_page": 50, "pages": 0,
             })
 
-        is_admin = bool(user.get("is_admin"))
         username = user["username"]
         user_id = user["id"]
 
@@ -670,40 +706,17 @@ def setup_output_routes(routes):
 
         db = await get_db()
 
-        # ── Collect files with STRICT scoping ──
-        # EVERY user (admin or not) only sees their own subfolder here.
-        # Admins use the separate /outputs/all endpoint for cross-user browsing.
-        files: list[dict] = []
-        logger.info(
-            "list_outputs: user=%s is_admin=%s output_dir=%s",
-            username, is_admin, output_dir,
-        )
-
+        # ── Collect files (cached) ──
         user_dir = output_dir / username
-        logger.info(
-            "list_outputs: scanning user_dir=%s exists=%s is_dir=%s",
-            user_dir, user_dir.exists(), user_dir.is_dir() if user_dir.exists() else False,
-        )
-        if user_dir.is_dir():
-            for entry in user_dir.rglob("*"):
-                if entry.is_file() and entry.suffix.lower() in ALL_MEDIA_EXTS:
-                    # Skip VHS-style sidecar PNGs (they belong to a video)
-                    if _is_video_sidecar(entry):
-                        continue
-                    files.append(_file_info(entry, output_dir))
-
-        # Also list root-level dirs so we can see what's in the output folder
-        if output_dir.exists():
-            root_items = [e.name for e in output_dir.iterdir()]
-            logger.info(
-                "list_outputs: output_dir root contents: %s",
-                root_items[:20],
-            )
-
-        logger.info(
-            "list_outputs: user=%s found %d files before filters",
-            username, len(files),
-        )
+        cached = _get_cached_files(username, output_dir)
+        if cached is not None:
+            # Deep-copy so filter mutations don't corrupt cache
+            files = [dict(f) for f in cached]
+        else:
+            files = _scan_user_files(user_dir, output_dir)
+            _set_cached_files(username, files)
+            # Work on copies so cache stays clean
+            files = [dict(f) for f in files]
 
         # Apply search filter
         if search:
@@ -715,12 +728,14 @@ def setup_output_routes(routes):
         elif type_filter == "video":
             files = [f for f in files if f["type"] == "video"]
 
-        # ── Load tags + ratings from DB ──
-        file_paths = [f["relative_path"] for f in files]
+        # ── Load tags + ratings from DB (only when needed) ──
         tags_map: dict[str, list[str]] = {}
         ratings_map: dict[str, int] = {}
+        need_all_metadata = bool(tag_filter or min_rating > 0)
 
-        if file_paths:
+        if need_all_metadata and files:
+            # Tag/rating filters require metadata for all remaining files
+            file_paths = [f["relative_path"] for f in files]
             placeholders = ", ".join("?" for _ in file_paths)
             tag_rows = await db.fetchall(
                 f"SELECT file_path, tag FROM output_tags WHERE user_id = ? AND file_path IN ({placeholders})",
@@ -736,19 +751,19 @@ def setup_output_routes(routes):
             for row in rating_rows:
                 ratings_map[row["file_path"]] = row["rating"]
 
-        for f in files:
-            rp = f["relative_path"]
-            f["tags"] = tags_map.get(rp, [])
-            f["rating"] = ratings_map.get(rp, 0)
+            for f in files:
+                rp = f["relative_path"]
+                f["tags"] = tags_map.get(rp, [])
+                f["rating"] = ratings_map.get(rp, 0)
 
-        # Apply tag filter (case-insensitive comparison)
-        if tag_filter:
-            tag_filter_lower = tag_filter.lower()
-            files = [f for f in files if tag_filter_lower in [t.lower() for t in f["tags"]]]
+            # Apply tag filter
+            if tag_filter:
+                tag_lower = tag_filter.lower()
+                files = [f for f in files if tag_lower in [t.lower() for t in f["tags"]]]
 
-        # Apply rating filter
-        if min_rating > 0:
-            files = [f for f in files if f["rating"] >= min_rating]
+            # Apply rating filter
+            if min_rating > 0:
+                files = [f for f in files if f["rating"] >= min_rating]
 
         # Sort
         if sort == "oldest":
@@ -756,7 +771,19 @@ def setup_output_routes(routes):
         elif sort == "name":
             files.sort(key=lambda f: f["filename"].lower())
         elif sort == "rating":
-            files.sort(key=lambda f: (-f["rating"], -f["modified"]))
+            # Need ratings for sort even if filter wasn't active
+            if not need_all_metadata and files:
+                file_paths = [f["relative_path"] for f in files]
+                placeholders = ", ".join("?" for _ in file_paths)
+                rating_rows = await db.fetchall(
+                    f"SELECT file_path, rating FROM output_ratings WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *file_paths),
+                )
+                for row in rating_rows:
+                    ratings_map[row["file_path"]] = row["rating"]
+                for f in files:
+                    f["rating"] = ratings_map.get(f["relative_path"], 0)
+            files.sort(key=lambda f: (-f.get("rating", 0), -f["modified"]))
         else:
             files.sort(key=lambda f: f["modified"], reverse=True)
 
@@ -765,11 +792,36 @@ def setup_output_routes(routes):
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
 
+        # Load tags/ratings for page files only (for display) if not already loaded
+        if not need_all_metadata and sort != "rating":
+            page_paths = [f["relative_path"] for f in page_files]
+            if page_paths:
+                placeholders = ", ".join("?" for _ in page_paths)
+                tag_rows = await db.fetchall(
+                    f"SELECT file_path, tag FROM output_tags WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *page_paths),
+                )
+                for row in tag_rows:
+                    tags_map.setdefault(row["file_path"], []).append(row["tag"])
+                rating_rows = await db.fetchall(
+                    f"SELECT file_path, rating FROM output_ratings WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *page_paths),
+                )
+                for row in rating_rows:
+                    ratings_map[row["file_path"]] = row["rating"]
+
+        for f in page_files:
+            rp = f["relative_path"]
+            if "tags" not in f:
+                f["tags"] = tags_map.get(rp, [])
+            if "rating" not in f:
+                f["rating"] = ratings_map.get(rp, 0)
+
         # Enrich only the current page with expensive metadata
         for f in page_files:
             _enrich_file_info(f, output_dir)
-        # Strip internal fields from all entries
-        for f in files:
+        # Strip internal fields from page entries only
+        for f in page_files:
             f.pop("_abs_path", None)
 
         return web.json_response({
@@ -843,12 +895,13 @@ def setup_output_routes(routes):
         elif type_filter == "video":
             files = [f for f in files if f["type"] == "video"]
 
-        # ── Load tags + ratings from DB ──
-        file_paths = [f["relative_path"] for f in files]
+        # ── Load tags + ratings from DB (only when needed) ──
         tags_map: dict[str, list[str]] = {}
         ratings_map: dict[str, int] = {}
+        need_all_metadata = bool(tag_filter or min_rating > 0)
 
-        if file_paths:
+        if need_all_metadata and files:
+            file_paths = [f["relative_path"] for f in files]
             placeholders = ", ".join("?" for _ in file_paths)
             tag_rows = await db.fetchall(
                 f"SELECT file_path, tag FROM output_tags WHERE user_id = ? AND file_path IN ({placeholders})",
@@ -864,19 +917,19 @@ def setup_output_routes(routes):
             for row in rating_rows:
                 ratings_map[row["file_path"]] = row["rating"]
 
-        for f in files:
-            rp = f["relative_path"]
-            f["tags"] = tags_map.get(rp, [])
-            f["rating"] = ratings_map.get(rp, 0)
+            for f in files:
+                rp = f["relative_path"]
+                f["tags"] = tags_map.get(rp, [])
+                f["rating"] = ratings_map.get(rp, 0)
 
-        # Apply tag filter (case-insensitive comparison)
-        if tag_filter:
-            tag_filter_lower = tag_filter.lower()
-            files = [f for f in files if tag_filter_lower in [t.lower() for t in f["tags"]]]
+            # Apply tag filter (case-insensitive comparison)
+            if tag_filter:
+                tag_lower = tag_filter.lower()
+                files = [f for f in files if tag_lower in [t.lower() for t in f["tags"]]]
 
-        # Apply rating filter
-        if min_rating > 0:
-            files = [f for f in files if f["rating"] >= min_rating]
+            # Apply rating filter
+            if min_rating > 0:
+                files = [f for f in files if f["rating"] >= min_rating]
 
         # Sort
         if sort == "oldest":
@@ -884,7 +937,18 @@ def setup_output_routes(routes):
         elif sort == "name":
             files.sort(key=lambda f: f["filename"].lower())
         elif sort == "rating":
-            files.sort(key=lambda f: (-f["rating"], -f["modified"]))
+            if not need_all_metadata and files:
+                file_paths = [f["relative_path"] for f in files]
+                placeholders = ", ".join("?" for _ in file_paths)
+                rating_rows = await db.fetchall(
+                    f"SELECT file_path, rating FROM output_ratings WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *file_paths),
+                )
+                for row in rating_rows:
+                    ratings_map[row["file_path"]] = row["rating"]
+                for f in files:
+                    f["rating"] = ratings_map.get(f["relative_path"], 0)
+            files.sort(key=lambda f: (-f.get("rating", 0), -f["modified"]))
         else:
             files.sort(key=lambda f: f["modified"], reverse=True)
 
@@ -893,11 +957,36 @@ def setup_output_routes(routes):
         start = (page - 1) * per_page
         page_files = files[start:start + per_page]
 
+        # Load tags/ratings for page files only (for display) if not already loaded
+        if not need_all_metadata and sort != "rating":
+            page_paths = [f["relative_path"] for f in page_files]
+            if page_paths:
+                placeholders = ", ".join("?" for _ in page_paths)
+                tag_rows = await db.fetchall(
+                    f"SELECT file_path, tag FROM output_tags WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *page_paths),
+                )
+                for row in tag_rows:
+                    tags_map.setdefault(row["file_path"], []).append(row["tag"])
+                rating_rows = await db.fetchall(
+                    f"SELECT file_path, rating FROM output_ratings WHERE user_id = ? AND file_path IN ({placeholders})",
+                    (user_id, *page_paths),
+                )
+                for row in rating_rows:
+                    ratings_map[row["file_path"]] = row["rating"]
+
+        for f in page_files:
+            rp = f["relative_path"]
+            if "tags" not in f:
+                f["tags"] = tags_map.get(rp, [])
+            if "rating" not in f:
+                f["rating"] = ratings_map.get(rp, 0)
+
         # Enrich only the current page with expensive metadata
         for f in page_files:
             _enrich_file_info(f, output_dir)
-        # Strip internal fields from all entries
-        for f in files:
+        # Strip internal fields from page entries only
+        for f in page_files:
             f.pop("_abs_path", None)
 
         return web.json_response({
@@ -1276,6 +1365,8 @@ def setup_output_routes(routes):
             _purge_thumb_cache(file_path)
             file_path.unlink()
             logger.info("User %s deleted output: %s", user["username"], file_path)
+            # Invalidate file-list cache for this user
+            _file_cache.pop(user["username"], None)
         except OSError as e:
             return web.json_response({"error": str(e)}, status=500)
 
