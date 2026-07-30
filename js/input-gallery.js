@@ -227,7 +227,9 @@ function _injectCSS() {
    ──────────────────────────────────────────────────────────────────── */
 let _el = null;
 let _page = 1;
-const PER = 60;
+const PER_OPTS = [20, 40, 60, 100, 200, 500];
+const PER_KEY = "mu.inputs.perPage";
+let _per = _loadPer();
 let _sort = "newest";
 let _search = "";
 let _type = "all";
@@ -269,6 +271,9 @@ function _renderInto(el, mode) {
   tb.appendChild(inp);
   tb.appendChild(_sel([["newest","Newest"],["oldest","Oldest"],["name","Name"]], _sort, v => { _sort = v; _page = 1; _load(); }));
   tb.appendChild(_sel([["all","All Types"],["image","Images"],["video","Videos"]], _type, v => { _type = v; _page = 1; _load(); }));
+  const perSel = _sel(PER_OPTS.map(n => [String(n), `${n} / page`]), String(_per), v => { _per = _savePer(v); _page = 1; _load(); });
+  perSel.title = "Items per page";
+  tb.appendChild(perSel);
   if (_mode === "admin") {
     const us = _sel([["","All Users"]], "", v => { _userF = v; _page = 1; _load(); });
     us.id = "mu-inp-uf"; tb.appendChild(us); _loadUsers(us);
@@ -320,6 +325,16 @@ function _sel(opts, val, fn) {
   return s;
 }
 
+function _loadPer() {
+  const n = parseInt(localStorage.getItem(PER_KEY), 10);
+  return PER_OPTS.includes(n) ? n : 60;
+}
+function _savePer(v) {
+  const n = PER_OPTS.includes(parseInt(v, 10)) ? parseInt(v, 10) : 60;
+  try { localStorage.setItem(PER_KEY, String(n)); } catch (e) { /* ignore */ }
+  return n;
+}
+
 function _viewUrl(f) {
   const p = new URLSearchParams({filename: f.filename, type: "input"});
   if (f.subfolder) p.set("subfolder", f.subfolder);
@@ -340,7 +355,7 @@ async function _load() {
   if (!grid) return;
   grid.innerHTML = '<div class="mu-inp-loading">Loading\u2026</div>';
   try {
-    const p = new URLSearchParams({page:_page, per_page:PER, sort:_sort});
+    const p = new URLSearchParams({page:_page, per_page:_per, sort:_sort});
     if (_search) p.set("search",_search);
     if (_type !== "all") p.set("type",_type);
     if (_userF) p.set("user",_userF);
