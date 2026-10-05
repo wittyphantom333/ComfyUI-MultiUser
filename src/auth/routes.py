@@ -1,13 +1,12 @@
 """Authentication routes: login, register, logout, token management."""
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 import yaml
 from aiohttp import web
 
 from .passwords import hash_password, verify_password
 from .tokens import create_jwt, generate_api_token, get_api_token_expiry, hash_api_token
-from ..config import get_config, load_config
+from ..config import get_config, load_config, get_base_dir
 from ..db.factory import get_db
 
 logger = logging.getLogger("comfyui-multiuser.auth.routes")
@@ -552,7 +551,7 @@ def setup_auth_routes(routes):
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
-        config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+        config_path = get_base_dir() / "config.yaml"
         if not config_path.exists():
             return web.json_response({"error": "config.yaml not found"}, status=500)
 
