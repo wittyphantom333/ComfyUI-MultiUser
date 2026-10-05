@@ -1013,10 +1013,7 @@ export function renderAdminSidebar(el) {
 /**
  * Render the Server config tab (trusted IPs, public routes).
  */
-function _renderServerConfig(container) {
-  const content = container.querySelector(".mu-admin-content");
-  if (!content) return;
-
+function _renderServerConfig(content) {
   content.innerHTML = `
     <h3 style="margin:0 0 8px;font-size:12px;color:var(--input-text,#ddd);">Trusted IPs</h3>
     <p style="color:#888;font-size:11px;margin:0 0 8px 0;">IPs in this list bypass API key / session authentication. Supports individual IPs and CIDR ranges (e.g. 192.168.1.0/24). One per line or comma-separated.</p>
