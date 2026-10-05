@@ -1,4 +1,5 @@
 """aiohttp middleware for authentication on all ComfyUI routes."""
+import ipaddress
 import logging
 from aiohttp import web
 from typing import Optional
@@ -8,6 +9,44 @@ from ..db.factory import get_db
 from ..config import get_config
 
 logger = logging.getLogger("comfyui-multiuser.auth.middleware")
+
+
+def _is_trusted_ip(request: web.Request) -> bool:
+    """Check if the client IP is in the trusted_ips list."""
+    trusted = get_config("server", "trusted_ips", default=[])
+    if not trusted:
+        return False
+
+    # Resolve real client IP (handles reverse proxy headers)
+    client_ip_str = request.headers.get("X-Forwarded-For", "")
+    if client_ip_str:
+        client_ip_str = client_ip_str.split(",")[0].strip()
+    else:
+        peername = request.transport.get_extra_info("peername")
+        if peername:
+            client_ip_str = peername[0]
+
+    if not client_ip_str:
+        return False
+
+    try:
+        client_addr = ipaddress.ip_address(client_ip_str)
+    except ValueError:
+        return False
+
+    for entry in trusted:
+        entry = entry.strip()
+        if "/" in entry:
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+                if client_addr in network:
+                    return True
+            except ValueError:
+                continue
+        else:
+            if client_ip_str == entry:
+                return True
+    return False
 
 # ---------------------------------------------------------------------------
 # Instead of blocking everything and whitelisting public routes, we PROTECT
@@ -148,6 +187,12 @@ async def auth_middleware(request: web.Request, handler):
         # Still attach user info if a valid session exists (best-effort)
         user = await _try_identify_user(request, quiet=True)
         request["multiuser_user"] = user  # may be None — that's fine
+        return await handler(request)
+
+    # --- Trusted IPs bypass auth entirely ---
+    if _is_trusted_ip(request):
+        logger.debug("Trusted IP bypass: %s %s", method, path)
+        request["multiuser_user"] = None
         return await handler(request)
 
     # --- Protected route: credentials required ---

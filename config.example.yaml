@@ -139,3 +139,8 @@ server:
     - "/multiuser/login"
     - "/multiuser/register"
     - "/multiuser/health"
+
+  # Trusted IPs that bypass API key / session authentication.
+  # Useful for reverse proxies, local tools, or internal services.
+  # Supports individual IPs and CIDR ranges (e.g. "192.168.1.0/24").
+  trusted_ips: []

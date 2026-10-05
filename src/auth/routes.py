@@ -1,11 +1,12 @@
 """Authentication routes: login, register, logout, token management."""
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from aiohttp import web
 
 from .passwords import hash_password, verify_password
 from .tokens import create_jwt, generate_api_token, get_api_token_expiry, hash_api_token
-from ..config import get_config
+from ..config import get_config, load_config
 from ..db.factory import get_db
 
 logger = logging.getLogger("comfyui-multiuser.auth.routes")
@@ -525,3 +526,59 @@ def setup_auth_routes(routes):
         )
 
         return web.json_response({"success": True})
+
+
+@routes.get("/multiuser/server-config")
+async def get_server_config(request: web.Request):
+    """Return server config values (trusted_ips, public_routes)."""
+    user = request.get("multiuser_user")
+    if not user or not user.get("is_admin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    return web.json_response({
+        "trusted_ips": get_config("server", "trusted_ips", default=[]),
+        "public_routes": get_config("server", "public_routes", default=[]),
+    })
+
+
+@routes.post("/multiuser/server-config")
+async def update_server_config(request: web.Request):
+    """Update server config values (trusted_ips, public_routes)."""
+    user = request.get("multiuser_user")
+    if not user or not user.get("is_admin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    if not config_path.exists():
+        return web.json_response({"error": "config.yaml not found"}, status=500)
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    if "trusted_ips" in data:
+        ips = data["trusted_ips"]
+        if isinstance(ips, str):
+            ips = [i.strip() for i in ips.split(",") if i.strip()]
+        elif not isinstance(ips, list):
+            ips = []
+        config.setdefault("server", {})["trusted_ips"] = ips
+
+    if "public_routes" in data:
+        routes = data["public_routes"]
+        if isinstance(routes, str):
+            routes = [r.strip() for r in routes.split(",") if r.strip()]
+        elif not isinstance(routes, list):
+            routes = []
+        config.setdefault("server", {})["public_routes"] = routes
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+    load_config(force_reload=True)
+
+    return web.json_response({"success": True})
