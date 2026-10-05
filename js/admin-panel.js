@@ -1018,31 +1018,34 @@ function _renderServerConfig(container) {
   if (!content) return;
 
   content.innerHTML = `
-    <div class="mu-admin-section">
-      <h3>Trusted IPs</h3>
-      <p class="mu-hint">IPs in this list bypass API key / session authentication. Supports individual IPs and CIDR ranges (e.g. 192.168.1.0/24). One per line or comma-separated.</p>
-      <textarea id="mu-trusted-ips" class="mu-admin-textarea" rows="6" placeholder="127.0.0.1&#10;192.168.1.0/24"></textarea>
-      <button class="mu-admin-btn mu-admin-btn-primary" id="mu-save-trusted-ips">Save Trusted IPs</button>
+    <h3 style="margin:0 0 8px;font-size:12px;color:var(--input-text,#ddd);">Trusted IPs</h3>
+    <p style="color:#888;font-size:11px;margin:0 0 8px 0;">IPs in this list bypass API key / session authentication. Supports individual IPs and CIDR ranges (e.g. 192.168.1.0/24). One per line or comma-separated.</p>
+    <textarea id="mu-trusted-ips" style="width:100%;padding:6px 8px;background:var(--comfy-input-bg,#222);border:1px solid var(--border-color,#4e4e4e);border-radius:5px;color:var(--input-text,#ddd);font-size:12px;box-sizing:border-box;font-family:monospace;" rows="6" placeholder="127.0.0.1&#10;192.168.1.0/24"></textarea>
+    <div style="margin-top:8px;">
+      <button class="mu-btn mu-btn-primary" id="mu-save-trusted-ips">Save Trusted IPs</button>
     </div>
 
-    <div class="mu-admin-section">
-      <h3>Public Routes</h3>
-      <p class="mu-hint">Routes that don't require authentication. One per line or comma-separated.</p>
-      <textarea id="mu-public-routes" class="mu-admin-textarea" rows="4" placeholder="/multiuser/login&#10;/multiuser/register"></textarea>
-      <button class="mu-admin-btn mu-admin-btn-primary" id="mu-save-public-routes">Save Public Routes</button>
+    <h3 style="margin:20px 0 8px;font-size:12px;color:var(--input-text,#ddd);">Public Routes</h3>
+    <p style="color:#888;font-size:11px;margin:0 0 8px 0;">Routes that don't require authentication. One per line or comma-separated.</p>
+    <textarea id="mu-public-routes" style="width:100%;padding:6px 8px;background:var(--comfy-input-bg,#222);border:1px solid var(--border-color,#4e4e4e);border-radius:5px;color:var(--input-text,#ddd);font-size:12px;box-sizing:border-box;font-family:monospace;" rows="4" placeholder="/multiuser/login&#10;/multiuser/register"></textarea>
+    <div style="margin-top:8px;">
+      <button class="mu-btn mu-btn-primary" id="mu-save-public-routes">Save Public Routes</button>
     </div>
 
-    <div id="mu-server-config-status" class="mu-admin-status"></div>
+    <div id="mu-server-config-status" style="margin-top:12px;font-size:11px;color:#888;"></div>
   `;
 
   content.querySelector("#mu-save-trusted-ips").addEventListener("click", () => _saveServerConfig("trusted_ips"));
   content.querySelector("#mu-save-public-routes").addEventListener("click", () => _saveServerConfig("public_routes"));
+
+  // Load current values
+  _loadServerConfig();
 }
 
 async function _loadServerConfig() {
   const statusEl = document.getElementById("mu-server-config-status");
   try {
-    const res = await apiFetch("/multiuser/server-config");
+    const res = await apiGet("/server-config");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
@@ -1074,17 +1077,17 @@ async function _saveServerConfig(field) {
   }
 
   statusEl.textContent = "Saving...";
-  statusEl.className = "mu-admin-status mu-admin-status-loading";
+  statusEl.style.color = "#888";
 
   try {
-    const res = await apiFetch("/multiuser/server-config", { method: "POST" }, { [field]: value });
+    const res = await apiPost("/server-config", { [field]: value });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     statusEl.textContent = data.success ? "Saved successfully." : "Save failed.";
-    statusEl.className = "mu-admin-status mu-admin-status-success";
+    statusEl.style.color = data.success ? "#6bff8b" : "#ff6b6b";
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
-    statusEl.className = "mu-admin-status mu-admin-status-error";
+    statusEl.style.color = "#ff6b6b";
   }
 }
 
